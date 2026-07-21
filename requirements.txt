@@ -1,0 +1,16 @@
+# FastAPI + ASGI server
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Gemini SDK - powers both /api/analyze (streaming) and /api/postmortem (non-streaming)
+google-generativeai==0.8.3
+
+# Loads GEMINI_API_KEY etc. from .env in local/dev
+python-dotenv==1.0.1
+
+# Request validation for IncidentAnalysisRequest / PostMortemRequest
+pydantic==2.9.2
+
+# NOTE: Mermaid.js and diff2html (used to render the diagram + git diff
+# blocks in Section 2/3 of the analysis) are loaded via CDN in index.html -
+# no Python package needed for them.
