@@ -606,17 +606,26 @@ async def real_analysis_stream(
             if await request.is_disconnected():
                 logger.info("Client disconnected mid-stream; stopping generation.")
                 break
-            if chunk.text:
-                full_response_text += chunk.text
-                yield sse_event(chunk.text)
+            chunk_str = ""
+            try:
+                if chunk.text:
+                    chunk_str = chunk.text
+            except Exception:
+                try:
+                    chunk_str = "".join(getattr(p, "text", "") for p in getattr(chunk, "parts", []))
+                except Exception:
+                    pass
+            if chunk_str:
+                full_response_text += chunk_str
+                yield sse_event(chunk_str)
 
-        if full_response_text.strip() and query_embedding:
+        if full_response_text.strip():
             new_incident_id = incident_store.store_incident(
                 user_id=user_id,
                 error_log=combined_log_text,
                 environment=environment,
                 analysis_text=full_response_text,
-                embedding=query_embedding,
+                embedding=query_embedding or [],
             )
             dispatch_generic_webhook_background(user_id, "incident_created", new_incident_id)
 
@@ -642,6 +651,19 @@ async def real_analysis_stream(
         yield sse_error(f"Unexpected server error: {str(e)}")
 
     finally:
+        if new_incident_id is None and full_response_text.strip():
+            try:
+                new_incident_id = incident_store.store_incident(
+                    user_id=user_id,
+                    error_log=combined_log_text,
+                    environment=environment,
+                    analysis_text=full_response_text,
+                    embedding=query_embedding or [],
+                )
+                dispatch_generic_webhook_background(user_id, "incident_created", new_incident_id)
+            except Exception as store_err:
+                logger.error(f"Failed to auto-save incident in finally block: {store_err}")
+
         yield sse_done(incident_id=new_incident_id)
 
 
@@ -1074,13 +1096,18 @@ def dispatch_generic_webhook_background(user_id: int, event_type: str, incident_
 @app.post("/api/register", response_model=auth.TokenResponse)
 async def register(payload: auth.RegisterRequest):
     username = payload.username.strip()
-    if not username or not payload.password:
-        raise HTTPException(status_code=400, detail="Username and password are required.")
+    email = payload.email.strip() if payload.email else ""
+    if not username or not payload.password or not email:
+        raise HTTPException(status_code=400, detail="Username, email, and password are required.")
+    if "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Please enter a valid email address.")
     if len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    if not any(c.isupper() for c in payload.password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter.")
 
     try:
-        user_id = auth.create_user(username, payload.password)
+        user_id = auth.create_user(username, payload.password, email=email)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 

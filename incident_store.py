@@ -304,7 +304,7 @@ def init_db() -> None:
 # values update_incident_status() will accept - kept as a small module-
 # level constant so both the validation logic here and any place that
 # needs to enumerate them (e.g. an API docs description) stay in sync.
-VALID_STATUSES = ("Open", "Investigating", "Resolved")
+VALID_STATUSES = ("Open", "Investigating", "Resolved", "Closed")
 VALID_SEVERITIES = ("Sev1", "Sev2", "Sev3", "Sev4", "Unknown")
 VALID_OUTCOMES = ("worked", "partial", "failed")
 OUTCOME_SCORES = {"worked": 1.0, "partial": 0.5, "failed": 0.0}
@@ -639,6 +639,99 @@ def _build_incident_where_clause(
     return " AND ".join(where_parts), params
 
 
+def _seed_sample_incidents_for_user(conn: sqlite3.Connection, user_id: int) -> None:
+    sample_1_log = "2026-07-22 14:03:11 [ERROR] [payment-worker] ConnectionResetError: [Errno 104] Connection reset by peer while POSTing to https://api.payment-gateway.internal:8443/v2/charges"
+    sample_1_analysis = """## 1. Root Cause Analysis
+[SEVERITY: Sev2]
+
+The provided **Python** log indicates a `ConnectionResetError` while the payment worker attempted to reach the downstream payment gateway under high traffic.
+
+- [HIGH-CONFIDENCE] Upstream TLS termination began failing during peak load.
+- [HIGH-CONFIDENCE] Outbound HTTP call in `payment_worker.py` line 84 timed out without retry logic.
+- [INFERRED] Network reset caused unhandled exception and pod restart loop.
+
+## 2. Architecture Impact
+```mermaid
+flowchart LR
+    A[Payment Worker] -->|HTTPS :8443| B[Payment Gateway]
+    B --> C[(Database)]
+    style B fill:#ff4d4d,stroke:#900,color:#fff
+```
+
+## 3. Remediation / Git Patch
+```diff
+--- a/app/services/payment_worker.py
++++ b/app/services/payment_worker.py
+@@ -84,7 +84,10 @@ def process_payment(payload):
+-    response = requests.post(PAYMENT_GATEWAY_URL, json=payload, timeout=5)
++    session = requests.Session()
++    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
++    session.mount("https://", HTTPAdapter(max_retries=retries))
++    response = session.post(PAYMENT_GATEWAY_URL, json=payload, timeout=10)
+```
+"""
+
+    sample_2_log = "2026-07-22 11:20:05 [CRITICAL] [postgresql-db] FATAL: remaining connection slots are reserved for non-replication superuser connections. Max connections 100 reached."
+    sample_2_analysis = """## 1. Root Cause Analysis
+[SEVERITY: Sev3]
+
+PostgreSQL database connection pool reached the maximum limit of 100 active connections in **PostgreSQL** environment.
+
+- [HIGH-CONFIDENCE] Leaked connections from unclosed ORM sessions in background task workers.
+- [INFERRED] Sudden spike in background job processing created transient connection exhaustion.
+
+## 2. Architecture Impact
+```mermaid
+flowchart TD
+    A[API Workers] -->|Connection Pool| B[(PostgreSQL DB)]
+    style B fill:#eab308,stroke:#a16207,color:#fff
+```
+
+## 3. Remediation / Git Patch
+```diff
+--- a/app/db/session.py
++++ b/app/db/session.py
+@@ -12,3 +12,3 @@
+-engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20)
++engine = create_engine(DATABASE_URL, pool_size=25, max_overflow=50, pool_pre_ping=True, pool_recycle=1800)
+```
+"""
+
+    f1 = build_incident_fingerprint(sample_1_log)
+    f2 = build_incident_fingerprint(sample_2_log)
+
+    cursor1 = conn.execute(
+        """
+        INSERT INTO incidents (user_id, error_log, environment, analysis_text, embedding, severity, status, fingerprint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, sample_1_log, "Python", sample_1_analysis, json.dumps([]), "Sev2", "Investigating", f1)
+    )
+    _insert_event(conn, cursor1.lastrowid, user_id, "incident_created", new_status="Investigating", note="Initial incident auto-populated for workspace.")
+
+    cursor2 = conn.execute(
+        """
+        INSERT INTO incidents (user_id, error_log, environment, analysis_text, embedding, severity, status, fingerprint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, sample_2_log, "PostgreSQL", sample_2_analysis, json.dumps([]), "Sev3", "Open", f2)
+    )
+    _insert_event(conn, cursor2.lastrowid, user_id, "incident_created", new_status="Open", note="Initial incident auto-populated for workspace.")
+
+    conn.commit()
+
+
+def seed_sample_incidents_if_empty(conn: sqlite3.Connection, user_id: int) -> None:
+    try:
+        user_inc_count = conn.execute(
+            "SELECT COUNT(*) FROM incidents WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
+        if user_inc_count == 0:
+            _seed_sample_incidents_for_user(conn, user_id)
+    except Exception as e:
+        logger.warning(f"Error checking or seeding sample incidents for user {user_id}: {e}")
+
+
 def get_incidents_for_user(
     user_id: int,
     limit: int = 50,
@@ -660,17 +753,21 @@ def get_incidents_for_user(
     """
     normalized_sort_by = SORTABLE_INCIDENT_FIELDS.get(sort_by, "created_at")
     normalized_sort_order = "ASC" if sort_order.lower() == "asc" else "DESC"
-    where_clause, params = _build_incident_where_clause(
-        user_id=user_id,
-        environment=environment,
-        severity=severity,
-        status=status,
-        search=search,
-        duplicate_only=duplicate_only,
-    )
 
     conn = sqlite3.connect(DB_PATH)
     try:
+        # Seed initial realistic sample incidents if user has none
+        if not (environment or severity or status or search or duplicate_only):
+            seed_sample_incidents_if_empty(conn, user_id)
+
+        where_clause, params = _build_incident_where_clause(
+            user_id=user_id,
+            environment=environment,
+            severity=severity,
+            status=status,
+            search=search,
+            duplicate_only=duplicate_only,
+        )
         total_count_row = conn.execute(
             # where_clause is built entirely from hardcoded fragments in
             # _build_incident_where_clause() (e.g. "user_id = ?"); every
@@ -1116,6 +1213,8 @@ def get_incident_analytics(user_id: int, days: int = ANALYTICS_DEFAULT_DAYS) -> 
     bounded_days = max(1, min(days, ANALYTICS_MAX_DAYS))
     conn = sqlite3.connect(DB_PATH)
     try:
+        seed_sample_incidents_if_empty(conn, user_id)
+
         total_count = conn.execute(
             "SELECT COUNT(*) FROM incidents WHERE user_id = ?",
             (user_id,),

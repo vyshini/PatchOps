@@ -86,6 +86,7 @@ bearer_scheme = HTTPBearer()
 class RegisterRequest(BaseModel):
     username: str
     password: str
+    email: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -181,7 +182,7 @@ async def get_current_user(
 # ---------------------------------------------------------------------------
 # USER CRUD
 # ---------------------------------------------------------------------------
-def create_user(username: str, password: str) -> int:
+def create_user(username: str, password: str, email: Optional[str] = None) -> int:
     """
     Creates a new user with a bcrypt-hashed password. Raises ValueError
     on duplicate username (caught by the caller and turned into a clean
@@ -192,8 +193,8 @@ def create_user(username: str, password: str) -> int:
     try:
         hashed = hash_password(password)
         cursor = conn.execute(
-            "INSERT INTO users (username, hashed_password) VALUES (?, ?)",
-            (username, hashed),
+            "INSERT INTO users (username, hashed_password, email) VALUES (?, ?, ?)",
+            (username, hashed, email),
         )
         conn.commit()
         return cursor.lastrowid

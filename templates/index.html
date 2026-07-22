@@ -17,6 +17,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
     <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
     <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 
     <script>
         tailwind.config = {
@@ -27,17 +28,37 @@
                 }
             }
         }
-        mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+        mermaid.initialize({ 
+            startOnLoad: false, 
+            theme: 'dark', 
+            fontSize: 18, 
+            securityLevel: 'loose',
+            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+        });
     </script>
 
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
         body { background-color: #0f172a; color: #cbd5e1; }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #0f172a; }
         ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+        #mermaidOutput {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 380px;
+        }
+        #mermaidOutput svg {
+            max-width: 100% !important;
+            width: 100% !important;
+            height: auto !important;
+            min-height: 360px !important;
+        }
 
         /* Custom Markdown Styles */
         .markdown-body h1, .markdown-body h2 { font-weight: 700; margin-top: 1.5rem; margin-bottom: 1rem; text-transform: uppercase; font-size: 1.1rem; letter-spacing: 0.05em; color: #f97316; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
@@ -46,6 +67,15 @@
         .markdown-body li { margin-bottom: 0.75rem; padding-left: 1.5rem; position: relative; }
         .markdown-body li::before { content: "•"; color: #f97316; position: absolute; left: 0; font-weight: bold; }
         .markdown-body code { background-color: #1e293b; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-family: monospace; color: #38bdf8; font-size: 0.9em; }
+
+        /* Print Media Styles */
+        @media print {
+            body * { visibility: hidden !important; }
+            #postMortemPrintModal, #postMortemPrintModal * { visibility: visible !important; }
+            #postMortemPrintModal { position: absolute !important; left: 0 !important; top: 0 !important; width: 100% !important; height: auto !important; background: white !important; padding: 0 !important; margin: 0 !important; overflow: visible !important; }
+            #pmModalPrintArea { padding: 0 !important; box-shadow: none !important; border: none !important; background: white !important; color: black !important; }
+            .no-print { display: none !important; }
+        }
 
         /* Confidence Tags */
         .tag-high { background-color: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34,197,94,0.4); padding: 0.2rem 0.6rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; margin-right: 0.5rem; display: inline-flex; align-items: center; vertical-align: middle; }
@@ -74,79 +104,150 @@
         .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(51, 65, 85, 0.8); }
     </style>
 </head>
-<body class="min-h-screen flex flex-col font-sans">
+<body class="min-h-screen flex flex-col font-sans antialiased bg-slate-950 text-slate-200">
 
     <!-- Auth Modal -->
-    <div id="authPanel" class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex items-center justify-center">
-        <div class="bg-slate-800 p-8 rounded-2xl border border-slate-700 w-full max-w-md shadow-2xl">
-            <div class="text-center mb-8 flex flex-col items-center">
-                <div class="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center border border-slate-700 shadow-inner mb-4">
+    <div id="authPanel" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 p-8 rounded-2xl border border-slate-800 w-full max-w-md shadow-2xl relative overflow-hidden">
+            <div class="absolute -top-12 -right-12 w-32 h-32 bg-primary/10 rounded-full blur-2xl pointer-events-none"></div>
+            
+            <div class="text-center mb-6 flex flex-col items-center relative z-10">
+                <div class="w-14 h-14 bg-slate-800 rounded-2xl flex items-center justify-center border border-slate-700 shadow-inner mb-3">
                     <i class="ph-fill ph-wrench text-3xl text-primary"></i>
                 </div>
-                <h1 class="text-3xl font-bold text-white mb-2 tracking-tight">Patch<span class="text-primary">Ops</span></h1>
-                <p class="text-slate-400 text-sm">Enterprise Incident Resolution Hub</p>
+                <h1 class="text-3xl font-extrabold text-white mb-1 tracking-tight">Patch<span class="text-primary">Ops</span></h1>
+                <p class="text-slate-400 text-xs font-medium uppercase tracking-wider">Enterprise Incident Resolution Hub</p>
+            </div>
+
+            <!-- Tab Switcher -->
+            <div class="flex bg-slate-950 p-1 rounded-xl border border-slate-800 mb-6 relative z-10">
+                <button id="loginTabBtn" onclick="switchAuthTab('login')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all bg-primary text-white shadow-md">
+                    Login
+                </button>
+                <button id="registerTabBtn" onclick="switchAuthTab('register')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-slate-400 hover:text-white hover:bg-slate-800/50">
+                    Register
+                </button>
             </div>
             
-            <div class="space-y-5">
-                <div>
-                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Username</label>
-                    <div class="relative">
-                        <i class="ph ph-user absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
-                        <input type="text" id="authUsername" class="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 pl-10 pr-4 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all" placeholder="sre_admin">
+            <div class="relative z-10">
+                <!-- LOGIN FORM -->
+                <div id="loginSection" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Username</label>
+                        <div class="relative">
+                            <i class="ph ph-user absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                            <input type="text" id="loginUsername" class="w-full bg-slate-950 border border-slate-700 rounded-xl py-3 pl-11 pr-4 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm" placeholder="sre_admin">
+                        </div>
                     </div>
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Password</label>
-                    <div class="relative">
-                        <i class="ph ph-lock-key absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
-                        <input type="password" id="authPassword" class="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 pl-10 pr-4 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all" placeholder="••••••••">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Password</label>
+                        <div class="relative">
+                            <i class="ph ph-lock-key absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                            <input type="password" id="loginPassword" class="w-full bg-slate-950 border border-slate-700 rounded-xl py-3 pl-11 pr-11 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm" placeholder="••••••••">
+                            <button type="button" onclick="togglePasswordVisibility('loginPassword', 'loginPassIcon')" class="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors focus:outline-none p-1" title="Toggle Password Visibility">
+                                <i id="loginPassIcon" class="ph ph-eye text-lg"></i>
+                            </button>
+                        </div>
                     </div>
-                </div>
-                
-                <div id="authError" class="hidden bg-red-900/30 border border-red-800/50 text-red-400 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
-                    <i class="ph-fill ph-warning-circle text-lg"></i>
-                    <span id="authErrorText"></span>
+                    
+                    <div id="loginAuthError" class="hidden bg-red-950/50 border border-red-800/60 text-red-300 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
+                        <i class="ph-fill ph-warning-circle text-lg shrink-0"></i>
+                        <span id="loginAuthErrorText"></span>
+                    </div>
+
+                    <div class="pt-2">
+                        <button onclick="handleLogin()" class="w-full bg-primary hover:bg-orange-600 text-white font-semibold py-3 px-4 rounded-xl transition-all shadow-lg shadow-orange-500/20 text-sm">
+                            Login
+                        </button>
+                    </div>
                 </div>
 
-                <div class="flex gap-4 pt-2">
-                    <button onclick="handleAuth('login')" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 px-4 rounded-xl transition-colors">Login</button>
-                    <button onclick="handleAuth('register')" class="flex-1 bg-primary hover:bg-orange-600 text-white font-semibold py-3 px-4 rounded-xl transition-all shadow-lg shadow-orange-500/20">Register</button>
+                <!-- REGISTER FORM -->
+                <div id="registerSection" class="hidden space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Email</label>
+                        <div class="relative">
+                            <i class="ph ph-envelope-simple absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                            <input type="email" id="registerEmail" class="w-full bg-slate-950 border border-slate-700 rounded-xl py-3 pl-11 pr-4 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm" placeholder="sre@company.com">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Username</label>
+                        <div class="relative">
+                            <i class="ph ph-user absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                            <input type="text" id="registerUsername" class="w-full bg-slate-950 border border-slate-700 rounded-xl py-3 pl-11 pr-4 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm" placeholder="sre_admin">
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex items-center justify-between mb-2">
+                            <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Password</label>
+                            <span class="text-[10px] text-slate-500">Min 8 chars, 1 uppercase</span>
+                        </div>
+                        <div class="relative">
+                            <i class="ph ph-lock-key absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                            <input type="password" id="registerPassword" class="w-full bg-slate-950 border border-slate-700 rounded-xl py-3 pl-11 pr-11 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm" placeholder="••••••••">
+                            <button type="button" onclick="togglePasswordVisibility('registerPassword', 'regPassIcon')" class="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors focus:outline-none p-1" title="Toggle Password Visibility">
+                                <i id="regPassIcon" class="ph ph-eye text-lg"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Confirm Password</label>
+                        <div class="relative">
+                            <i class="ph ph-lock-key-open absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                            <input type="password" id="registerConfirmPassword" class="w-full bg-slate-950 border border-slate-700 rounded-xl py-3 pl-11 pr-11 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all text-sm" placeholder="••••••••">
+                            <button type="button" onclick="togglePasswordVisibility('registerConfirmPassword', 'regConfirmPassIcon')" class="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors focus:outline-none p-1" title="Toggle Password Visibility">
+                                <i id="regConfirmPassIcon" class="ph ph-eye text-lg"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="registerAuthError" class="hidden bg-red-950/50 border border-red-800/60 text-red-300 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
+                        <i class="ph-fill ph-warning-circle text-lg shrink-0"></i>
+                        <span id="registerAuthErrorText"></span>
+                    </div>
+
+                    <div class="pt-2">
+                        <button onclick="handleRegister()" class="w-full bg-primary hover:bg-orange-600 text-white font-semibold py-3 px-4 rounded-xl transition-all shadow-lg shadow-orange-500/20 text-sm">
+                            Create Account
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Main App Container -->
-    <div id="appPanel" class="hidden flex-1 flex flex-col">
-        <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-40 shadow-sm">
+    <div id="appPanel" class="hidden flex-1 flex flex-col min-h-screen">
+        <header class="bg-slate-900/90 backdrop-blur-md border-b border-slate-800 sticky top-0 z-40 shadow-md">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex items-center justify-between h-16">
-                    <div class="flex items-center gap-10">
-                        <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-8">
+                        <div class="flex items-center gap-2 cursor-pointer" onclick="switchTab('analysis')">
                             <i class="ph-fill ph-wrench text-2xl text-primary"></i>
-                            <h1 class="text-xl font-bold text-white tracking-tight">Patch<span class="text-primary">Ops</span></h1>
+                            <h1 class="text-xl font-black text-white tracking-tight">Patch<span class="text-primary">Ops</span></h1>
                         </div>
                         
-                        <nav class="hidden md:flex gap-2" id="navTabs">
-                            <button onclick="switchTab('analysis')" class="tab-btn active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all bg-slate-800 text-primary border border-slate-700">
-                                <i class="ph ph-magnifying-glass text-lg"></i> New Analysis
+                        <nav class="hidden md:flex gap-1.5" id="navTabs">
+                            <button onclick="switchTab('analysis')" class="tab-btn active flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all bg-slate-800 text-primary border border-slate-700 shadow-inner">
+                                <i class="ph ph-magnifying-glass text-base"></i> New Analysis
                             </button>
-                            <button onclick="switchTab('dashboard')" class="tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
-                                <i class="ph ph-chart-bar text-lg"></i> Dashboard
+                            <button onclick="switchTab('dashboard')" class="tab-btn flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
+                                <i class="ph ph-chart-bar text-base"></i> Dashboard
                             </button>
-                            <button onclick="switchTab('settings')" class="tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
-                                <i class="ph ph-gear text-lg"></i> Settings
+                            <button onclick="switchTab('settings')" class="tab-btn flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
+                                <i class="ph ph-gear text-base"></i> Settings
                             </button>
                         </nav>
                     </div>
                     
                     <div class="flex items-center gap-4">
-                        <div class="hidden sm:flex items-center gap-2 bg-slate-800 py-1.5 px-3 rounded-full border border-slate-700">
-                            <i class="ph-fill ph-user-circle text-slate-400 text-lg"></i>
-                            <span id="currentUserLabel" class="text-xs font-semibold text-slate-300"></span>
+                        <div class="hidden sm:flex items-center gap-2 bg-slate-800/80 py-1.5 px-3 rounded-full border border-slate-700">
+                            <i class="ph-fill ph-user-circle text-slate-400 text-base"></i>
+                            <span id="currentUserLabel" class="text-xs font-semibold text-slate-200"></span>
                         </div>
-                        <button onclick="logout()" class="text-sm font-medium text-slate-400 hover:text-white transition-colors flex items-center gap-1">
-                            <i class="ph ph-sign-out text-lg"></i> Logout
+                        <button onclick="logout()" class="text-xs font-bold text-slate-400 hover:text-white transition-colors flex items-center gap-1.5 bg-slate-800/40 hover:bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700/50">
+                            <i class="ph ph-sign-out text-base"></i> Logout
                         </button>
                     </div>
                 </div>
@@ -157,74 +258,140 @@
 
             <!-- ANALYSIS VIEW -->
             <div id="view-analysis" class="space-y-8 animate-fade-in">
-                <div class="glass-card rounded-2xl overflow-hidden shadow-2xl">
+                <div class="glass-card rounded-2xl overflow-hidden shadow-2xl border border-slate-800">
                     <div class="p-6 space-y-6">
+                        <div class="flex items-center justify-between border-b border-slate-800 pb-4">
+                            <div>
+                                <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                                    <i class="ph-fill ph-lightning text-primary"></i> Incident Diagnostics Engine
+                                </h2>
+                                <p class="text-xs text-slate-400">Paste logs, stack traces, and code snippets to generate root cause analysis, architecture graph, and git patches.</p>
+                            </div>
+                            <span class="text-xs font-mono px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-primary font-semibold">Gemini AI Powered</span>
+                        </div>
+
                         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                             <div>
-                                <label class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-2">
-                                    <i class="ph ph-terminal-window text-primary"></i> Raw Error Log <span class="text-red-400">*</span>
+                                <label class="flex items-center justify-between text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
+                                    <span class="flex items-center gap-1.5"><i class="ph ph-terminal-window text-primary"></i> Raw Error Log <span class="text-red-400">*</span></span>
+                                    <span class="text-[10px] text-slate-500 font-normal">Stack trace, exception, or system output</span>
                                 </label>
-                                <textarea id="errorLogInput" rows="6" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-300 font-mono text-xs focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors resize-y leading-relaxed" placeholder="Paste stack trace, system log, or exception here..."></textarea>
+                                <textarea id="errorLogInput" rows="7" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 text-slate-200 font-mono text-xs focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors resize-y leading-relaxed" placeholder="Paste stack trace, exception details, or primary error log..."></textarea>
                             </div>
                             <div>
-                                <label class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-2">
-                                    <i class="ph ph-code"></i> Source Code Snippet (Optional)
+                                <label class="flex items-center justify-between text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
+                                    <span class="flex items-center gap-1.5"><i class="ph ph-code text-sky-400"></i> Source Code Snippet (Optional)</span>
+                                    <span class="text-[10px] text-slate-500 font-normal">Improves Git Diff patch accuracy</span>
                                 </label>
-                                <textarea id="sourceCodeInput" rows="6" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-300 font-mono text-xs focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors resize-y leading-relaxed" placeholder="Paste relevant file content to generate accurate Git Diff patch..."></textarea>
+                                <textarea id="sourceCodeInput" rows="7" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 text-slate-200 font-mono text-xs focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors resize-y leading-relaxed" placeholder="Paste relevant file contents to generate exact line-by-line patch..."></textarea>
                             </div>
                         </div>
                         
-                        <div class="flex flex-col sm:flex-row items-end gap-4 bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+                        <!-- Multi-log Service Section -->
+                        <div class="space-y-3 pt-2">
+                            <div class="flex items-center justify-between">
+                                <label class="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                                    <i class="ph ph-tree-structure text-amber-400"></i> Multi-Service Correlated Logs (Optional)
+                                </label>
+                                <button onclick="addSecondaryLogInput()" class="text-xs font-semibold text-primary hover:text-orange-400 transition-colors flex items-center gap-1 bg-slate-800/80 hover:bg-slate-800 px-3 py-1 rounded-lg border border-slate-700">
+                                    <i class="ph ph-plus-circle text-sm"></i> Add Service Log
+                                </button>
+                            </div>
+                            <div id="secondaryLogsContainer" class="space-y-3">
+                                <!-- Dynamic secondary logs added here -->
+                            </div>
+                        </div>
+
+                        <!-- Target Env & Run Button -->
+                        <div class="flex flex-col sm:flex-row items-end gap-4 bg-slate-950 p-4 rounded-xl border border-slate-800">
                             <div class="flex-1 w-full">
-                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Target Environment</label>
+                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Target Environment</label>
                                 <div class="relative">
-                                    <select id="envInput" class="w-full bg-slate-800 border border-slate-700 rounded-lg py-2.5 pl-4 pr-10 text-sm font-medium text-slate-200 appearance-none focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors">
-                                        <option value="General">General / Agnostic</option>
-                                        <option value="Python">Python</option>
-                                        <option value="Kubernetes">Kubernetes</option>
-                                        <option value="Docker">Docker</option>
-                                        <option value="AWS">AWS Serverless</option>
-                                        <option value="Node.js">Node.js</option>
+                                    <select id="envInput" class="w-full bg-slate-900 border border-slate-700 rounded-lg py-2.5 pl-4 pr-10 text-xs font-semibold text-slate-200 appearance-none focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors">
+                                        <option value="General">General / Agnostic System</option>
+                                        <option value="Python">Python / FastAPI / Django</option>
+                                        <option value="Kubernetes">Kubernetes Pod / Cluster</option>
+                                        <option value="Docker">Docker Container</option>
+                                        <option value="AWS">AWS Serverless / Lambda</option>
+                                        <option value="Node.js">Node.js / Express / React</option>
+                                        <option value="PostgreSQL">PostgreSQL / Database</option>
+                                        <option value="Go">Go / Microservices</option>
                                     </select>
                                     <i class="ph ph-caret-down absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
                                 </div>
                             </div>
-                            <button id="analyzeBtn" onclick="analyzeIncident()" class="w-full sm:w-auto bg-primary hover:bg-orange-600 text-white font-semibold py-2.5 px-8 rounded-lg transition-all shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2 h-[42px]">
-                                <i class="ph-bold ph-lightning"></i> <span>Analyze Incident</span>
+                            <button id="analyzeBtn" onclick="analyzeIncident()" class="w-full sm:w-auto bg-primary hover:bg-orange-600 text-white font-bold py-2.5 px-8 rounded-lg transition-all shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2 h-[42px] text-sm">
+                                <i class="ph-bold ph-lightning text-lg"></i> <span>Analyze Incident</span>
                             </button>
                         </div>
                     </div>
                 </div>
 
-                <div id="apiError" class="hidden bg-red-900/20 border border-red-800/50 text-red-400 px-6 py-4 rounded-xl text-sm shadow-lg flex items-start gap-3">
-                    <i class="ph-fill ph-warning-circle text-xl mt-0.5"></i>
+                <div id="apiError" class="hidden bg-red-950/60 border border-red-800/80 text-red-300 px-6 py-4 rounded-xl text-sm shadow-lg flex items-start gap-3">
+                    <i class="ph-fill ph-warning-circle text-xl mt-0.5 shrink-0"></i>
                     <div id="apiErrorText" class="leading-relaxed"></div>
                 </div>
 
+                <!-- Similar Historical Incidents (RAG Panel) -->
+                <div id="similarIncidentsCard" class="hidden glass-card rounded-2xl overflow-hidden shadow-xl border border-amber-500/30">
+                    <div class="bg-amber-500/10 border-b border-amber-500/20 px-6 py-3 flex items-center justify-between">
+                        <h3 class="text-xs font-bold text-amber-300 uppercase tracking-widest flex items-center gap-2">
+                            <i class="ph-fill ph-database text-amber-400 text-lg"></i> Similar Historical Incidents Found (RAG Match)
+                        </h3>
+                        <span id="similarCountBadge" class="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full font-mono"></span>
+                    </div>
+                    <div id="similarIncidentsList" class="p-6 space-y-3 bg-slate-900/60 text-xs">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+
                 <div id="outputContainer" class="hidden space-y-6">
-                    <div class="glass-card rounded-2xl overflow-hidden shadow-xl">
+                    <!-- Action Toolbar -->
+                    <div id="postAnalysisActions" class="hidden glass-card p-4 rounded-xl border border-slate-700/80 bg-slate-900/90 flex flex-wrap items-center justify-between gap-4 shadow-lg">
+                        <div class="flex items-center gap-2 text-xs text-slate-300 font-semibold">
+                            <i class="ph-fill ph-check-circle text-emerald-400 text-lg"></i>
+                            <span>Analysis Ready. Next Actions:</span>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button id="btnPostMortem" onclick="printCurrentPostMortem()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3.5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm">
+                                <i class="ph-bold ph-printer text-red-400 text-base"></i> Print / Save Post-Mortem
+                            </button>
+                            <button id="btnNotifySlack" onclick="triggerSlackNotify()" class="bg-[#E01E5A]/20 hover:bg-[#E01E5A]/30 text-[#E01E5A] border border-[#E01E5A]/40 px-3.5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5">
+                                <i class="ph-fill ph-slack-logo text-base"></i> Send to Slack
+                            </button>
+                            <button id="btnJira" onclick="triggerJiraIssue()" class="bg-[#0052CC]/20 hover:bg-[#0052CC]/30 text-[#0052CC] border border-[#0052CC]/40 px-3.5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5">
+                                <i class="ph-fill ph-jira-logo text-base"></i> Create Jira Ticket
+                            </button>
+                            <button id="btnGitHub" onclick="triggerGitHubPR()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3.5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5">
+                                <i class="ph-fill ph-github-logo text-base"></i> Scaffold GitHub PR
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="glass-card rounded-2xl overflow-hidden shadow-xl border border-slate-800">
                         <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
-                            <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                            <h2 class="text-xs font-extrabold text-white uppercase tracking-widest flex items-center gap-2">
                                 <i class="ph-fill ph-bug-droid text-primary text-lg"></i> 1. Root Cause Analysis
                             </h2>
                         </div>
-                        <div id="rcaOutput" class="p-6 markdown-body text-slate-300 text-sm leading-relaxed bg-slate-900/30"></div>
+                        <div id="rcaOutput" class="p-6 markdown-body text-slate-300 text-sm leading-relaxed bg-slate-900/40"></div>
                     </div>
 
-                    <div id="archContainer" class="hidden glass-card rounded-2xl overflow-hidden shadow-xl">
-                        <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-3">
-                            <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
-                                <i class="ph-fill ph-graph text-primary text-lg"></i> 2. Architecture Impact
+                    <div id="archContainer" class="hidden glass-card rounded-2xl overflow-hidden shadow-2xl border border-slate-800">
+                        <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-4 flex items-center justify-between">
+                            <h2 class="text-sm font-extrabold text-white uppercase tracking-widest flex items-center gap-2">
+                                <i class="ph-fill ph-graph text-primary text-xl"></i> 2. Architecture Impact
                             </h2>
+                            <span class="text-[11px] bg-slate-900 border border-slate-700 text-slate-400 px-3 py-1 rounded-full font-mono">System Topology & Impact Flow</span>
                         </div>
-                        <div class="p-6 overflow-x-auto flex justify-center bg-slate-900">
-                            <div id="mermaidOutput" class="py-4"></div>
+                        <div class="p-6 md:p-10 overflow-x-auto flex justify-center bg-slate-950/90 min-h-[420px]">
+                            <div id="mermaidOutput" class="w-full max-w-6xl py-4 flex justify-center items-center"></div>
                         </div>
                     </div>
 
-                    <div id="patchContainer" class="hidden glass-card rounded-2xl overflow-hidden shadow-xl">
+                    <div id="patchContainer" class="hidden glass-card rounded-2xl overflow-hidden shadow-xl border border-slate-800">
                         <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
-                            <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                            <h2 class="text-xs font-extrabold text-white uppercase tracking-widest flex items-center gap-2">
                                 <i class="ph-fill ph-git-diff text-primary text-lg"></i> 3. Remediation / Git Patch
                             </h2>
                         </div>
@@ -237,67 +404,89 @@
 
             <!-- DASHBOARD VIEW -->
             <div id="view-dashboard" class="hidden space-y-6 animate-fade-in">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden">
+                <!-- KPI Metrics -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden border border-slate-800">
                         <div class="absolute top-0 right-0 p-4 opacity-10"><i class="ph-fill ph-warning-octagon text-6xl text-white"></i></div>
-                        <span class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1 z-10">Total Incidents</span>
+                        <span class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1 z-10">Total Incidents</span>
                         <span id="dashTotal" class="text-4xl font-black text-white z-10">0</span>
                     </div>
                     
-                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden">
+                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden border border-slate-800">
                         <div class="absolute top-0 right-0 p-4 opacity-10"><i class="ph-fill ph-globe-hemisphere-west text-6xl text-primary"></i></div>
-                        <span class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1 z-10">Top Environment</span>
+                        <span class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1 z-10">Top Environment</span>
                         <span id="dashEnv" class="text-4xl font-black text-primary z-10 truncate">-</span>
                     </div>
                     
-                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden">
+                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden border border-slate-800">
                         <div class="absolute top-0 right-0 p-4 opacity-10"><i class="ph-fill ph-calendar-blank text-6xl text-white"></i></div>
-                        <span class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1 z-10">This Week</span>
+                        <span class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1 z-10">This Week</span>
                         <span id="dashWeek" class="text-4xl font-black text-white z-10">0</span>
                     </div>
 
-                    <div class="glass-card p-5 rounded-2xl shadow-lg flex flex-col justify-between border-slate-700/80 bg-slate-800/40">
-                        <div class="flex items-center gap-2 mb-3">
-                            <i class="ph-fill ph-faders text-primary text-lg"></i>
-                            <span class="text-slate-200 text-xs font-bold uppercase tracking-widest">Refine Data</span>
+                    <div class="glass-card p-5 rounded-2xl shadow-lg flex flex-col justify-between border-slate-800 bg-slate-900/60">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-slate-300 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5">
+                                <i class="ph-fill ph-chart-pie text-primary text-sm"></i> Export Data
+                            </span>
                         </div>
-                        <div class="space-y-3">
+                        <button onclick="exportCSV()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-2.5 px-4 rounded-xl text-xs font-bold transition-all border border-slate-700 flex items-center justify-center gap-2 shadow-sm">
+                            <i class="ph-bold ph-download-simple text-sm"></i> Export CSV
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Filters & Table -->
+                <div class="glass-card rounded-2xl shadow-xl overflow-hidden border border-slate-800">
+                    <div class="bg-slate-900/90 border-b border-slate-800 px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <h2 class="text-xs font-extrabold text-white uppercase tracking-widest flex items-center gap-2">
+                            <i class="ph-bold ph-list-dashes text-primary text-base"></i> Incident History
+                        </h2>
+
+                        <div class="flex flex-wrap items-center gap-3">
+                            <div class="relative min-w-[160px]">
+                                <input type="text" id="filterSearch" oninput="debounceDashboardLoad()" placeholder="Search error log..." class="w-full bg-slate-950 border border-slate-700 rounded-lg py-1.5 pl-3 pr-8 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-primary">
+                                <i class="ph ph-magnifying-glass absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>
+                            </div>
+
                             <div class="relative">
-                                <select id="filterSeverity" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 appearance-none outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all">
+                                <select id="filterSeverity" onchange="loadDashboard()" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-300 appearance-none outline-none focus:border-primary pr-8">
                                     <option value="">All Severities</option>
                                     <option value="Sev1">Sev1 (Critical)</option>
                                     <option value="Sev2">Sev2 (High)</option>
                                     <option value="Sev3">Sev3 (Medium)</option>
                                     <option value="Sev4">Sev4 (Low)</option>
                                 </select>
-                                <i class="ph ph-caret-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>
+                                <i class="ph ph-caret-down absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>
                             </div>
-                            <button onclick="loadDashboard()" class="w-full bg-primary hover:bg-orange-600 text-white py-2 rounded-lg text-sm font-semibold transition-all shadow-md shadow-orange-500/20">
-                                Apply Filters
-                            </button>
-                        </div>
-                    </div>
-                </div>
 
-                <div class="glass-card rounded-2xl shadow-xl overflow-hidden">
-                    <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-4 flex items-center justify-between">
-                        <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
-                            <i class="ph-bold ph-list-dashes text-primary text-lg"></i> Incident History
-                        </h2>
+                            <div class="relative">
+                                <select id="filterStatus" onchange="loadDashboard()" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-300 appearance-none outline-none focus:border-primary pr-8">
+                                    <option value="">All Statuses</option>
+                                    <option value="Open">Open</option>
+                                    <option value="Investigating">Investigating</option>
+                                    <option value="Resolved">Resolved</option>
+                                    <option value="Closed">Closed</option>
+                                </select>
+                                <i class="ph ph-caret-down absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>
+                            </div>
+                        </div>
                     </div>
                     
                     <div class="overflow-x-auto">
                         <table class="w-full text-left border-collapse">
                             <thead>
-                                <tr class="bg-slate-900/80 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-700">
-                                    <th class="px-6 py-4 font-semibold w-24">ID</th>
-                                    <th class="px-6 py-4 font-semibold w-32">Date</th>
-                                    <th class="px-6 py-4 font-semibold w-32">Environment</th>
-                                    <th class="px-6 py-4 font-semibold w-32">Severity</th>
-                                    <th class="px-6 py-4 font-semibold">Error Log Preview</th>
+                                <tr class="bg-slate-950 text-slate-400 text-[10px] uppercase tracking-wider border-b border-slate-800">
+                                    <th class="px-6 py-3.5 font-bold w-20">ID</th>
+                                    <th class="px-6 py-3.5 font-bold w-32">Date</th>
+                                    <th class="px-6 py-3.5 font-bold w-32">Environment</th>
+                                    <th class="px-6 py-3.5 font-bold w-28">Severity</th>
+                                    <th class="px-6 py-3.5 font-bold w-28">Status</th>
+                                    <th class="px-6 py-3.5 font-bold">Error Log Preview</th>
+                                    <th class="px-6 py-3.5 font-bold text-right w-24">Action</th>
                                 </tr>
                             </thead>
-                            <tbody id="incidentTableBody" class="text-sm divide-y divide-slate-700/50 bg-slate-900/30">
+                            <tbody id="incidentTableBody" class="text-xs divide-y divide-slate-800/80 bg-slate-900/20">
                                 <!-- Populated dynamically -->
                             </tbody>
                         </table>
@@ -308,85 +497,102 @@
             <!-- SETTINGS VIEW -->
             <div id="view-settings" class="hidden max-w-5xl mx-auto space-y-6 animate-fade-in">
                 <div class="mb-6">
-                    <h2 class="text-2xl font-bold text-white mb-2 tracking-tight">Integrations & Automation</h2>
-                    <p class="text-slate-400 text-sm">Configure outbound webhooks, ticketing systems, and code repository scaffolding.</p>
+                    <h2 class="text-2xl font-bold text-white mb-1 tracking-tight">Integrations & Automations</h2>
+                    <p class="text-slate-400 text-xs">Configure outbound webhooks, ticketing systems, and code repository scaffolding.</p>
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <!-- Slack Card -->
-                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-[#E01E5A]">
-                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-3">
-                            <i class="ph-fill ph-slack-logo text-[#E01E5A] text-2xl"></i> Slack Configuration
+                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-[#E01E5A] border-slate-800">
+                        <h3 class="text-base font-bold text-white mb-4 flex items-center gap-2.5">
+                            <i class="ph-fill ph-slack-logo text-[#E01E5A] text-xl"></i> Slack Configuration
                         </h3>
-                        <div class="space-y-4">
+                        <div class="space-y-4 text-xs">
                             <div>
-                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Webhook URL</label>
-                                <input type="text" id="set-slack-webhook" placeholder="https://hooks.slack.com/services/..." class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Webhook URL</label>
+                                <input type="text" id="set-slack-webhook" placeholder="https://hooks.slack.com/services/..." class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                             </div>
-                            <div class="grid grid-cols-2 gap-4">
+                            <div class="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Bot Token</label>
-                                    <input type="password" id="set-slack-token" placeholder="(Unchanged)" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                    <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Bot Token</label>
+                                    <input type="password" id="set-slack-token" placeholder="(Unchanged)" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Channel ID</label>
-                                    <input type="text" id="set-slack-channel" placeholder="C1234567" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                    <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Channel ID</label>
+                                    <input type="text" id="set-slack-channel" placeholder="C1234567" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <!-- Jira Card -->
-                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-[#0052CC]">
-                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-3">
-                            <i class="ph-fill ph-jira-logo text-[#0052CC] text-2xl"></i> Jira Cloud
+                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-[#0052CC] border-slate-800">
+                        <h3 class="text-base font-bold text-white mb-4 flex items-center gap-2.5">
+                            <i class="ph-fill ph-jira-logo text-[#0052CC] text-xl"></i> Jira Cloud
                         </h3>
-                        <div class="space-y-4">
-                            <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-4 text-xs">
+                            <div class="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Base URL</label>
-                                    <input type="text" id="set-jira-url" placeholder="https://domain.atlassian.net" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                    <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Base URL</label>
+                                    <input type="text" id="set-jira-url" placeholder="https://domain.atlassian.net" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Project Key</label>
-                                    <input type="text" id="set-jira-key" placeholder="ENG" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                    <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Project Key</label>
+                                    <input type="text" id="set-jira-key" placeholder="ENG" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                                 </div>
                             </div>
-                            <div class="grid grid-cols-2 gap-4">
+                            <div class="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Email</label>
-                                    <input type="email" id="set-jira-email" placeholder="user@domain.com" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                    <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Email</label>
+                                    <input type="email" id="set-jira-email" placeholder="user@domain.com" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">API Token</label>
-                                    <input type="password" id="set-jira-token" placeholder="(Unchanged)" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                    <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">API Token</label>
+                                    <input type="password" id="set-jira-token" placeholder="(Unchanged)" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <!-- GitHub Card -->
-                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-white md:col-span-2 lg:col-span-1">
-                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-3">
-                            <i class="ph-fill ph-github-logo text-white text-2xl"></i> GitHub PR Scaffolding
+                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-white border-slate-800">
+                        <h3 class="text-base font-bold text-white mb-4 flex items-center gap-2.5">
+                            <i class="ph-fill ph-github-logo text-white text-xl"></i> GitHub PR Scaffolding
                         </h3>
-                        <div class="space-y-4">
+                        <div class="space-y-4 text-xs">
                             <div>
-                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Repository</label>
-                                <input type="text" id="set-gh-repo" placeholder="owner/repo" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Repository (owner/repo)</label>
+                                <input type="text" id="set-gh-repo" placeholder="owner/repo" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                             </div>
                             <div>
-                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Personal Access Token</label>
-                                <input type="password" id="set-gh-token" placeholder="(Unchanged)" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Personal Access Token</label>
+                                <input type="password" id="set-gh-token" placeholder="(Unchanged)" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Generic Webhook Card -->
+                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-emerald-500 border-slate-800">
+                        <h3 class="text-base font-bold text-white mb-4 flex items-center gap-2.5">
+                            <i class="ph-fill ph-arrows-out-line-horizontal text-emerald-400 text-xl"></i> Generic Outbound Webhook
+                        </h3>
+                        <div class="space-y-4 text-xs">
+                            <div>
+                                <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Webhook Target URL</label>
+                                <input type="text" id="set-generic-webhook" placeholder="https://api.example.com/hooks/incidents" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
+                            </div>
+                            <div>
+                                <label class="block font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Subscribed Events</label>
+                                <input type="text" id="set-generic-events" placeholder="all (or incident_created,status_changed,outcome_recorded)" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200 focus:border-primary outline-none transition-all font-mono">
                             </div>
                         </div>
                     </div>
                     
                     <!-- Save Actions -->
-                    <div class="md:col-span-2 lg:col-span-1 flex flex-col justify-end">
-                         <div id="settingsMsg" class="hidden text-center text-sm font-semibold py-3 px-4 rounded-xl mb-4 transition-all"></div>
-                         <button onclick="saveSettings()" class="w-full bg-primary hover:bg-orange-600 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-orange-500/20 text-lg flex items-center justify-center gap-2">
-                             <i class="ph-bold ph-floppy-disk"></i> Save Configuration
+                    <div class="md:col-span-2 flex flex-col items-end">
+                         <div id="settingsMsg" class="hidden w-full text-center text-xs font-semibold py-3 px-4 rounded-xl mb-4 transition-all"></div>
+                         <button onclick="saveSettings()" class="w-full sm:w-auto bg-primary hover:bg-orange-600 text-white font-bold py-3.5 px-8 rounded-xl transition-all shadow-lg shadow-orange-500/20 text-sm flex items-center justify-center gap-2">
+                             <i class="ph-bold ph-floppy-disk text-lg"></i> Save Integration Configuration
                          </button>
                     </div>
                 </div>
@@ -395,11 +601,174 @@
         </main>
     </div>
 
+    <!-- INCIDENT DETAIL MODAL -->
+    <div id="incidentModal" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-slate-900 border border-slate-800 w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden my-8 flex flex-col max-h-[90vh]">
+            <div class="bg-slate-950 border-b border-slate-800 px-6 py-4 flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-3">
+                    <span id="modalIncidentId" class="text-base font-black text-white font-mono"></span>
+                    <span id="modalEnvBadge" class="bg-slate-800 border border-slate-700 text-slate-300 px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"></span>
+                    <span id="modalSevBadge" class="border px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest"></span>
+                </div>
+                
+                <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-1.5">
+                        <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Status:</label>
+                        <select id="modalStatusSelect" onchange="modalUpdateStatus()" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none focus:border-primary">
+                            <option value="Open">Open</option>
+                            <option value="Investigating">Investigating</option>
+                            <option value="Resolved">Resolved</option>
+                            <option value="Closed">Closed</option>
+                        </select>
+                    </div>
+                    <button onclick="closeIncidentModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors">
+                        <i class="ph ph-x text-xl"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
+                <!-- Quick Integrations Bar -->
+                <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950 p-3.5 rounded-xl border border-slate-800">
+                    <span class="font-bold text-slate-400 uppercase tracking-wider text-[10px] flex items-center gap-1">
+                        <i class="ph-fill ph-share-network text-primary"></i> Dispatch & Export:
+                    </span>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button onclick="modalNotifySlack()" class="bg-[#E01E5A]/20 hover:bg-[#E01E5A]/30 text-[#E01E5A] border border-[#E01E5A]/40 px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1">
+                            <i class="ph-fill ph-slack-logo"></i> Slack
+                        </button>
+                        <button onclick="modalJiraTicket()" class="bg-[#0052CC]/20 hover:bg-[#0052CC]/30 text-[#0052CC] border border-[#0052CC]/40 px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1">
+                            <i class="ph-fill ph-jira-logo"></i> Jira
+                        </button>
+                        <button onclick="modalGitHubPR()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1">
+                            <i class="ph-fill ph-github-logo"></i> GitHub PR
+                        </button>
+                        <button onclick="modalPrintPostMortem()" class="bg-slate-800 hover:bg-slate-700 text-red-400 border border-slate-700 px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1">
+                            <i class="ph-bold ph-printer"></i> Print / Save Post-Mortem
+                        </button>
+                    </div>
+                </div>
+
+                <div id="modalToast" class="hidden p-3 rounded-xl border text-xs font-semibold"></div>
+
+                <!-- Analysis Content -->
+                <div class="space-y-4">
+                    <h4 class="font-bold text-slate-200 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                        <i class="ph-fill ph-bug-droid text-primary"></i> Analysis & Findings
+                    </h4>
+                    <div id="modalRcaText" class="markdown-body p-4 bg-slate-950 rounded-xl border border-slate-800 text-slate-300 text-xs leading-relaxed"></div>
+                </div>
+
+                <!-- Outcome Form -->
+                <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                    <h4 class="font-bold text-slate-200 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                        <i class="ph-fill ph-check-square text-emerald-400"></i> Record Resolution Outcome
+                    </h4>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Outcome Type</label>
+                            <select id="modalOutcomeType" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 text-xs outline-none focus:border-primary">
+                                <option value="Resolved">Resolved (Permanent Fix)</option>
+                                <option value="Workaround">Workaround Applied</option>
+                                <option value="False Positive">False Positive / Duplicate</option>
+                                <option value="Upstream">Upstream Vendor Issue</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Resolution Note</label>
+                            <input type="text" id="modalOutcomeNote" placeholder="e.g., Deployed v2.4.1 retry logic..." class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 text-xs outline-none focus:border-primary">
+                        </div>
+                    </div>
+                    <button onclick="modalSubmitOutcome()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2 rounded-lg text-xs transition-all shadow-md">
+                        Record Outcome
+                    </button>
+                </div>
+
+                <!-- Audit Log Events -->
+                <div class="space-y-2">
+                    <h4 class="font-bold text-slate-400 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                        <i class="ph ph-clock-counter-clockwise"></i> Audit Event History
+                    </h4>
+                    <div id="modalEventsList" class="space-y-1.5 max-h-40 overflow-y-auto p-2 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- POST-MORTEM PRINT & SAVE MODAL -->
+    <div id="postMortemPrintModal" class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-slate-900 border border-slate-800 w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden my-6 flex flex-col max-h-[92vh]">
+            <!-- Modal Action Bar (Non-printable) -->
+            <div class="no-print bg-slate-950 border-b border-slate-800 px-6 py-4 flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-3">
+                    <span class="bg-orange-500/20 text-orange-400 border border-orange-500/40 px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5">
+                        <i class="ph-bold ph-printer"></i> Print / PDF Document
+                    </span>
+                    <span class="text-xs font-bold text-slate-300">Official Incident Resolution Post-Mortem</span>
+                </div>
+                
+                <div class="flex items-center gap-3">
+                    <button onclick="window.print()" class="bg-primary hover:bg-orange-600 text-white font-bold py-2 px-5 rounded-lg text-xs transition-all flex items-center gap-2 shadow-lg shadow-orange-500/20">
+                        <i class="ph-bold ph-printer text-base"></i> Print / Save as PDF
+                    </button>
+                    <button onclick="closePostMortemModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors">
+                        <i class="ph ph-x text-xl"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Printable Document Layout -->
+            <div id="pmModalPrintArea" class="p-8 md:p-12 overflow-y-auto flex-1 bg-white text-slate-800 text-xs leading-relaxed">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #ea580c; padding-bottom: 1rem; margin-bottom: 1.5rem;">
+                    <div>
+                        <h1 style="font-size: 1.5rem; font-weight: 800; color: #0f172a; margin: 0; letter-spacing: -0.025em;">Patch<span style="color: #ea580c;">Ops</span> <span style="font-size: 1rem; color: #64748b; font-weight: 600;">| Incident Post-Mortem</span></h1>
+                        <p style="font-size: 0.6875rem; color: #64748b; margin: 0.25rem 0 0 0; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Enterprise Incident Resolution Report</p>
+                    </div>
+                    <div style="text-align: right; font-size: 0.75rem; color: #334155; font-family: monospace; line-height: 1.5;">
+                        <strong>INCIDENT ID:</strong> <span id="pmModalIncidentId">#LATEST</span><br>
+                        <strong>REPORT DATE:</strong> <span id="pmModalDate"></span><br>
+                        <strong>STATUS:</strong> OFFICIAL POST-MORTEM
+                    </div>
+                </div>
+
+                <style>
+                    .pm-body h2 { font-size: 1.15rem; font-weight: 800; color: #ea580c; margin-top: 1.5rem; margin-bottom: 0.5rem; border-bottom: 2px solid #fed7aa; padding-bottom: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em; }
+                    .pm-body p { font-size: 0.875rem; line-height: 1.6; color: #334155; margin-bottom: 0.75rem; }
+                    .pm-body ul { margin-bottom: 0.75rem; padding-left: 1.25rem; list-style-type: disc; }
+                    .pm-body li { font-size: 0.875rem; line-height: 1.6; color: #334155; margin-bottom: 0.35rem; }
+                    .pm-body table { width: 100%; border-collapse: collapse; margin-top: 1rem; margin-bottom: 1.25rem; font-size: 0.8125rem; }
+                    .pm-body th { background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1; padding: 0.5rem 0.75rem; text-align: left; font-weight: 700; }
+                    .pm-body td { border: 1px solid #e2e8f0; padding: 0.5rem 0.75rem; color: #334155; }
+                    .pm-body code { background: #f1f5f9; color: #0284c7; padding: 0.15rem 0.35rem; border-radius: 0.25rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.8125rem; }
+                    .pm-body pre { background: #0f172a; color: #f8fafc; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.8125rem; margin-bottom: 1rem; }
+                    .pm-body pre code { background: transparent; color: inherit; padding: 0; }
+                </style>
+
+                <div id="pmModalBody" class="pm-body font-sans">
+                    <!-- Markdown rendered content -->
+                </div>
+
+                <div style="margin-top: 2.5rem; border-top: 1px solid #e2e8f0; padding-top: 0.75rem; display: flex; justify-content: space-between; font-size: 0.625rem; color: #94a3b8;">
+                    <span>PatchOps SRE Automated Intelligence</span>
+                    <span>Confidential - Internal Operational Document</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Frontend Application Logic -->
     <script>
         let currentToken = localStorage.getItem('patchops_token');
         let currentUsername = localStorage.getItem('patchops_user');
-        const API_URL = "http://localhost:8000";
+        const API_URL = window.location.origin;
+
+        let secondaryLogCount = 0;
+        let activeIncidentId = null;
+        let activeIncidentData = null;
+        let lastAnalysisResult = null;
+        let debounceTimer = null;
 
         async function apiCall(endpoint, method = 'GET', body = null) {
             const headers = { 'Content-Type': 'application/json' };
@@ -416,14 +785,117 @@
             return res.json();
         }
 
-        async function handleAuth(action) {
-            const user = document.getElementById('authUsername').value;
-            const pass = document.getElementById('authPassword').value;
-            const errDiv = document.getElementById('authError');
-            const errText = document.getElementById('authErrorText');
+        function switchAuthTab(tab) {
+            const loginSection = document.getElementById('loginSection');
+            const registerSection = document.getElementById('registerSection');
+            const loginTabBtn = document.getElementById('loginTabBtn');
+            const registerTabBtn = document.getElementById('registerTabBtn');
+
+            const loginErr = document.getElementById('loginAuthError');
+            const regErr = document.getElementById('registerAuthError');
+            if (loginErr) loginErr.classList.add('hidden');
+            if (regErr) regErr.classList.add('hidden');
+
+            if (tab === 'login') {
+                loginSection.classList.remove('hidden');
+                registerSection.classList.add('hidden');
+                loginTabBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg transition-all bg-primary text-white shadow-md";
+                registerTabBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg transition-all text-slate-400 hover:text-white hover:bg-slate-800/50";
+            } else {
+                loginSection.classList.add('hidden');
+                registerSection.classList.remove('hidden');
+                registerTabBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg transition-all bg-primary text-white shadow-md";
+                loginTabBtn.className = "flex-1 py-2 text-xs font-bold rounded-lg transition-all text-slate-400 hover:text-white hover:bg-slate-800/50";
+            }
+        }
+
+        function togglePasswordVisibility(inputId, iconId) {
+            const input = document.getElementById(inputId);
+            const icon = document.getElementById(iconId);
+            if (!input || !icon) return;
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.className = 'ph ph-eye-slash text-lg';
+            } else {
+                input.type = 'password';
+                icon.className = 'ph ph-eye text-lg';
+            }
+        }
+
+        async function handleLogin() {
+            const user = document.getElementById('loginUsername').value.trim();
+            const pass = document.getElementById('loginPassword').value;
+            const errDiv = document.getElementById('loginAuthError');
+            const errText = document.getElementById('loginAuthErrorText');
             
+            errDiv.classList.add('hidden');
+
+            if (!user || !pass) {
+                errText.textContent = "Please enter both username and password.";
+                errDiv.classList.remove('hidden');
+                return;
+            }
+
             try {
-                const data = await apiCall(`/api/${action}`, 'POST', { username: user, password: pass });
+                const data = await apiCall('/api/login', 'POST', { username: user, password: pass });
+                currentToken = data.access_token;
+                currentUsername = data.username;
+                localStorage.setItem('patchops_token', currentToken);
+                localStorage.setItem('patchops_user', currentUsername);
+                
+                document.getElementById('authPanel').classList.add('hidden');
+                document.getElementById('appPanel').classList.remove('hidden');
+                document.getElementById('currentUserLabel').textContent = currentUsername;
+                switchTab('analysis');
+            } catch (e) {
+                errText.textContent = e.message;
+                errDiv.classList.remove('hidden');
+            }
+        }
+
+        async function handleRegister() {
+            const email = document.getElementById('registerEmail').value.trim();
+            const user = document.getElementById('registerUsername').value.trim();
+            const pass = document.getElementById('registerPassword').value;
+            const confirmPass = document.getElementById('registerConfirmPassword').value;
+            const errDiv = document.getElementById('registerAuthError');
+            const errText = document.getElementById('registerAuthErrorText');
+            
+            errDiv.classList.add('hidden');
+
+            if (!email || !user || !pass || !confirmPass) {
+                errText.textContent = "Please fill in email, username, password, and confirm password.";
+                errDiv.classList.remove('hidden');
+                return;
+            }
+
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(email)) {
+                errText.textContent = "Please enter a valid email address.";
+                errDiv.classList.remove('hidden');
+                return;
+            }
+
+            if (pass.length < 8) {
+                errText.textContent = "Password must be at least 8 characters long.";
+                errDiv.classList.remove('hidden');
+                return;
+            }
+
+            if (!/[A-Z]/.test(pass)) {
+                errText.textContent = "Password must contain at least one uppercase letter (e.g. A-Z).";
+                errDiv.classList.remove('hidden');
+                return;
+            }
+
+            if (pass !== confirmPass) {
+                errText.textContent = "Password and confirm password do not match.";
+                errDiv.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const data = await apiCall('/api/register', 'POST', { username: user, email: email, password: pass });
                 currentToken = data.access_token;
                 currentUsername = data.username;
                 localStorage.setItem('patchops_token', currentToken);
@@ -451,27 +923,73 @@
                 document.getElementById('authPanel').classList.add('hidden');
                 document.getElementById('appPanel').classList.remove('hidden');
                 document.getElementById('currentUserLabel').textContent = currentUsername;
-                switchTab('analysis');
+                
+                const urlParams = new URLSearchParams(window.location.search);
+                const incId = urlParams.get('incident');
+                if (incId) {
+                    switchTab('dashboard');
+                    openIncidentModal(parseInt(incId, 10));
+                } else {
+                    switchTab('analysis');
+                }
             }
         }
 
         function switchTab(tabId) {
             ['analysis', 'dashboard', 'settings'].forEach(t => {
-                document.getElementById(`view-${t}`).classList.add('hidden');
+                const el = document.getElementById(`view-${t}`);
+                if (el) el.classList.add('hidden');
             });
-            document.getElementById(`view-${tabId}`).classList.remove('hidden');
+            const target = document.getElementById(`view-${tabId}`);
+            if (target) target.classList.remove('hidden');
 
             const btns = document.querySelectorAll('.tab-btn');
             btns.forEach(btn => {
-                btn.className = "tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent";
+                btn.className = "tab-btn flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent";
             });
             const activeBtn = document.querySelector(`button[onclick="switchTab('${tabId}')"]`);
             if (activeBtn) {
-                activeBtn.className = "tab-btn active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all bg-slate-800 text-primary border border-slate-700 shadow-inner";
+                activeBtn.className = "tab-btn active flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all bg-slate-800 text-primary border border-slate-700 shadow-inner";
             }
 
             if (tabId === 'dashboard') loadDashboard();
             if (tabId === 'settings') loadSettings();
+        }
+
+        function addSecondaryLogInput() {
+            secondaryLogCount++;
+            const container = document.getElementById('secondaryLogsContainer');
+            const logId = `secLog_${secondaryLogCount}`;
+            const div = document.createElement('div');
+            div.id = logId;
+            div.className = "bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2 relative animate-fade-in";
+            div.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <input type="text" placeholder="Service Label (e.g. Payment Gateway)" class="sec-label bg-slate-900 border border-slate-700 rounded-lg px-3 py-1 text-xs font-semibold text-slate-200 outline-none focus:border-primary w-2/3">
+                    <button onclick="removeSecondaryLog('${logId}')" class="text-slate-500 hover:text-red-400 p-1 text-sm"><i class="ph ph-trash"></i></button>
+                </div>
+                <textarea rows="3" placeholder="Paste secondary service log content..." class="sec-content w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 font-mono text-xs outline-none focus:border-primary"></textarea>
+            `;
+            container.appendChild(div);
+        }
+
+        function removeSecondaryLog(logId) {
+            const el = document.getElementById(logId);
+            if (el) el.remove();
+        }
+
+        function getSecondaryLogs() {
+            const container = document.getElementById('secondaryLogsContainer');
+            const items = container.querySelectorAll('.bg-slate-950');
+            const logs = [];
+            items.forEach(item => {
+                const label = item.querySelector('.sec-label')?.value.trim();
+                const content = item.querySelector('.sec-content')?.value.trim();
+                if (label && content) {
+                    logs.push({ label, content });
+                }
+            });
+            return logs;
         }
 
         function formatMarkdownWithTags(text) {
@@ -480,13 +998,13 @@
             // Highlight SEVERITY properly
             html = html.replace(/\[SEVERITY:\s*(Sev[1-4])\]/gi, (match, sev) => {
                 let colorClass = sev.toLowerCase() === 'sev1' ? 'text-red-400 bg-red-400/10 border-red-400/30' :
-                                 sev.toLowerCase() === 'Sev2' || sev.toLowerCase() === 'sev2' ? 'text-orange-400 bg-orange-400/10 border-orange-400/30' :
-                                 sev.toLowerCase() === 'Sev3' || sev.toLowerCase() === 'sev3' ? 'text-yellow-400 bg-yellow-400/10 border-yellow-400/30' :
+                                 sev.toLowerCase() === 'sev2' ? 'text-orange-400 bg-orange-400/10 border-orange-400/30' :
+                                 sev.toLowerCase() === 'sev3' ? 'text-yellow-400 bg-yellow-400/10 border-yellow-400/30' :
                                  'text-blue-400 bg-blue-400/10 border-blue-400/30';
                 return `<div class="mb-4 inline-flex items-center gap-2 px-3 py-1 rounded-md border text-xs font-bold tracking-widest uppercase shadow-sm ${colorClass}"><i class="ph-fill ph-warning-circle text-lg"></i> SEVERITY: ${sev.toUpperCase()}</div>`;
             });
 
-            // Parse confidence tags AFTER markdown rendering to prevent escaping
+            // Parse confidence tags
             html = html.replace(/\[HIGH-CONFIDENCE\]/gi, '<span class="tag-high"><i class="ph-bold ph-check-circle mr-1 text-sm"></i> HIGH CONFIDENCE</span>');
             html = html.replace(/\[INFERRED\]/gi, '<span class="tag-inferred"><i class="ph-bold ph-lightbulb mr-1 text-sm"></i> INFERRED</span>');
 
@@ -497,17 +1015,21 @@
             const errLog = document.getElementById('errorLogInput').value;
             const srcCode = document.getElementById('sourceCodeInput').value;
             const env = document.getElementById('envInput').value;
+            const additionalLogs = getSecondaryLogs();
             const btn = document.getElementById('analyzeBtn');
             const errToast = document.getElementById('apiError');
             const errText = document.getElementById('apiErrorText');
             
-            if (!errLog) {
+            if (!errLog.trim()) {
                 errText.textContent = "Error log cannot be empty.";
                 errToast.classList.remove('hidden');
                 return;
             }
 
             errToast.classList.add('hidden');
+            document.getElementById('similarIncidentsCard').classList.add('hidden');
+            document.getElementById('postAnalysisActions').classList.add('hidden');
+            
             btn.disabled = true;
             btn.innerHTML = `<i class="ph-bold ph-spinner animate-spin"></i> <span>Analyzing <span class="typewriter"></span></span>`;
             document.getElementById('outputContainer').classList.remove('hidden');
@@ -523,12 +1045,13 @@
             document.getElementById('diffOutput').innerHTML = '';
 
             let fullText = "";
+            activeIncidentId = null;
 
             try {
                 const response = await fetch(`${API_URL}/api/analyze`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentToken}` },
-                    body: JSON.stringify({ error_log: errLog, source_code: srcCode, environment: env })
+                    body: JSON.stringify({ error_log: errLog, source_code: srcCode, environment: env, additional_logs: additionalLogs })
                 });
 
                 if (!response.ok) {
@@ -538,117 +1061,429 @@
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder('utf-8');
+                let buffer = '';
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
                     
-                    const chunk = decoder.decode(value, { stream: true });
-                    const lines = chunk.split('\n\n');
+                    buffer += decoder.decode(value, { stream: true });
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop() || '';
                     
-                    for (let line of lines) {
-                        if (line.startsWith('data: ')) {
-                            const data = JSON.parse(line.substring(6));
-                            if (data.error) throw new Error(data.error);
-                            if (data.done) break;
-                            
-                            if (data.text) {
-                                fullText += data.text;
-                                const sect1 = fullText.split("## 2.")[0];
-                                outRca.innerHTML = formatMarkdownWithTags(sect1);
+                    for (let part of parts) {
+                        const trimmedLine = part.trim();
+                        if (trimmedLine.startsWith('data: ')) {
+                            const jsonStr = trimmedLine.substring(6).trim();
+                            if (!jsonStr) continue;
+                            try {
+                                const data = JSON.parse(jsonStr);
+                                if (data.error) throw new Error(data.error);
+                                if (data.done) {
+                                    if (data.incident_id) activeIncidentId = data.incident_id;
+                                }
+
+                                if (data.similar_incidents && data.similar_incidents.length > 0) {
+                                    renderSimilarIncidents(data.similar_incidents);
+                                }
+                                
+                                if (data.text) {
+                                    fullText += data.text;
+                                    const sect1 = fullText.split("## 2.")[0];
+                                    outRca.innerHTML = formatMarkdownWithTags(sect1);
+                                }
+                            } catch (parseErr) {
+                                console.error("SSE parse error:", parseErr, jsonStr);
                             }
                         }
                     }
                 }
 
-                // Render Mermaid Diagram
-                const mermaidMatch = fullText.match(/```mermaid\n([\s\S]*?)```/i);
-                if (mermaidMatch) {
-                    outArch.classList.remove('hidden');
-                    const mermaidCode = mermaidMatch[1].trim();
-                    try {
-                        const { svg } = await mermaid.render('mermaid-svg', mermaidCode);
-                        document.getElementById('mermaidOutput').innerHTML = svg;
-                    } catch (e) {
-                        document.getElementById('mermaidOutput').innerHTML = `<div class="text-red-400 text-xs font-mono p-4 bg-red-900/10 border border-red-900/30 rounded-lg">Mermaid Parse Error: ${e.message}</div>`;
+                if (buffer && buffer.trim().startsWith('data: ')) {
+                    const jsonStr = buffer.trim().substring(6).trim();
+                    if (jsonStr) {
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            if (data.done && data.incident_id) activeIncidentId = data.incident_id;
+                            if (data.text) fullText += data.text;
+                        } catch (e) {}
                     }
                 }
 
-                // Render Git Diff with diff2html
-                const diffMatch = fullText.match(/```diff\n([\s\S]*?)```/i);
-                if (diffMatch) {
-                    outPatch.classList.remove('hidden');
-                    const diffCode = diffMatch[1].trim();
-                    const diffHtml = Diff2Html.html(diffCode, {
-                        drawFileList: false,
-                        matching: 'lines',
-                        outputFormat: 'line-by-line',
-                        colorScheme: 'dark'
-                    });
-                    document.getElementById('diffOutput').innerHTML = diffHtml;
+                lastAnalysisResult = { errorLog: errLog, fullText: fullText };
+
+                // Render Mermaid Diagram safely
+                try {
+                    const mermaidMatch = fullText.match(/```mermaid\n([\s\S]*?)```/i);
+                    if (mermaidMatch) {
+                        outArch.classList.remove('hidden');
+                        const mermaidCode = mermaidMatch[1].trim();
+                        const { svg } = await mermaid.render('mermaid-svg-out', mermaidCode);
+                        document.getElementById('mermaidOutput').innerHTML = svg;
+                    }
+                } catch (e) {
+                    outArch.classList.remove('hidden');
+                    document.getElementById('mermaidOutput').innerHTML = `<div class="text-red-400 text-xs font-mono p-4 bg-red-950/40 border border-red-900/50 rounded-lg">Mermaid Diagram Warning: ${e.message}</div>`;
                 }
+
+                // Render Git Diff safely
+                try {
+                    const sect3Match = fullText.match(/## 3\..*?([\s\S]*)/i);
+                    if (sect3Match || fullText.includes("```diff")) {
+                        outPatch.classList.remove('hidden');
+                        const sect3Content = sect3Match ? sect3Match[1] : fullText;
+                        const diffMatch = sect3Content.match(/```diff\n([\s\S]*?)```/i);
+                        let diffHtml = '';
+                        if (diffMatch) {
+                            const diffCode = diffMatch[1].trim();
+                            try {
+                                diffHtml = Diff2Html.html(diffCode, {
+                                    drawFileList: false,
+                                    matching: 'lines',
+                                    outputFormat: 'line-by-line',
+                                    colorScheme: 'dark'
+                                });
+                            } catch (diffErr) {
+                                diffHtml = `<pre class="text-xs font-mono p-4 bg-slate-900 text-slate-300 rounded-lg overflow-x-auto">${diffCode}</pre>`;
+                            }
+                        }
+                        const proseRemediation = sect3Content.replace(/```diff\n[\s\S]*?```/gi, '').trim();
+                        const proseHtml = proseRemediation ? `<div class="mt-4 text-slate-300 text-sm font-sans">${formatMarkdownWithTags(proseRemediation)}</div>` : '';
+                        document.getElementById('diffOutput').innerHTML = (diffHtml ? `<div class="mb-2">${diffHtml}</div>` : '') + proseHtml;
+                    }
+                } catch (e) {
+                    console.error("Diff render error:", e);
+                }
+
+                document.getElementById('postAnalysisActions').classList.remove('hidden');
+                await loadDashboard();
 
             } catch (e) {
                 errText.textContent = `Analysis Failed: ${e.message}`;
                 errToast.classList.remove('hidden');
-                outRca.innerHTML = `<p class="text-red-400 text-sm font-medium"><i class="ph-bold ph-warning"></i> Stream interrupted or failed.</p>`;
+                outRca.innerHTML = `<p class="text-red-400 text-xs font-semibold"><i class="ph-bold ph-warning"></i> ${e.message}</p>`;
             } finally {
                 btn.disabled = false;
-                btn.innerHTML = `<i class="ph-bold ph-lightning"></i> <span>Analyze Incident</span>`;
+                btn.innerHTML = `<i class="ph-bold ph-lightning text-lg"></i> <span>Analyze Incident</span>`;
+            }
+        }
+
+        function renderSimilarIncidents(matches) {
+            const card = document.getElementById('similarIncidentsCard');
+            const list = document.getElementById('similarIncidentsList');
+            const badge = document.getElementById('similarCountBadge');
+            
+            badge.textContent = `${matches.length} Matched Pattern(s)`;
+            list.innerHTML = '';
+
+            matches.forEach(m => {
+                const pct = Math.round(m.similarity * 100);
+                const item = `
+                    <div class="bg-slate-950 p-3 rounded-xl border border-amber-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <span class="bg-amber-500/20 text-amber-300 font-bold px-2 py-0.5 rounded text-[10px]">${pct}% Similarity</span>
+                                <span class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[10px]">${m.environment}</span>
+                                <span class="text-slate-500 text-[10px]">${m.created_at}</span>
+                            </div>
+                            <p class="text-slate-400 font-mono text-[11px] truncate max-w-xl">${m.error_log_preview}</p>
+                        </div>
+                    </div>
+                `;
+                list.innerHTML += item;
+            });
+            card.classList.remove('hidden');
+        }
+
+        function openPostMortemPrintModal(markdownText, incidentId) {
+            const modal = document.getElementById('postMortemPrintModal');
+            document.getElementById('pmModalIncidentId').textContent = `#${incidentId || 'LATEST'}`;
+            document.getElementById('pmModalDate').textContent = new Date().toLocaleDateString();
+            document.getElementById('pmModalBody').innerHTML = marked.parse(markdownText || '');
+            modal.classList.remove('hidden');
+        }
+
+        function closePostMortemModal() {
+            document.getElementById('postMortemPrintModal').classList.add('hidden');
+        }
+
+        async function printCurrentPostMortem() {
+            if (!lastAnalysisResult) return;
+            const btn = document.getElementById('btnPostMortem');
+            const origHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `<i class="ph ph-spinner animate-spin text-base"></i> Generating Report...`;
+
+            try {
+                const res = await apiCall('/api/postmortem', 'POST', {
+                    error_log: lastAnalysisResult.errorLog,
+                    analysis_text: lastAnalysisResult.fullText
+                });
+                openPostMortemPrintModal(res.markdown, activeIncidentId || 'LATEST');
+            } catch (e) {
+                alert(`Post-Mortem report generation failed: ${e.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            }
+        }
+
+        async function triggerSlackNotify() {
+            if (!activeIncidentId) return alert("Please run an analysis or select an incident first.");
+            try {
+                const res = await apiCall(`/api/incidents/${activeIncidentId}/notify-slack`, 'POST');
+                alert(res.message || "Notification sent to Slack!");
+            } catch (e) {
+                alert(`Slack dispatch failed: ${e.message}`);
+            }
+        }
+
+        async function triggerJiraIssue() {
+            if (!activeIncidentId) return alert("Please run an analysis or select an incident first.");
+            try {
+                const res = await apiCall(`/api/incidents/${activeIncidentId}/jira`, 'POST', { title: "", include_diff: true });
+                alert(`Jira Issue Linked: ${res.jira_issue_key}`);
+            } catch (e) {
+                alert(`Jira ticket creation failed: ${e.message}`);
+            }
+        }
+
+        async function triggerGitHubPR() {
+            if (!activeIncidentId) return alert("Please run an analysis or select an incident first.");
+            try {
+                const res = await apiCall(`/api/incidents/${activeIncidentId}/github-pr`, 'POST', { title: "", include_diff: true });
+                alert(`GitHub PR Scaffolded: ${res.pr_url}`);
+            } catch (e) {
+                alert(`GitHub PR creation failed: ${e.message}`);
+            }
+        }
+
+        function debounceDashboardLoad() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(loadDashboard, 300);
+        }
+
+        function formatDateStr(dateStr) {
+            if (!dateStr) return "-";
+            try {
+                const formatted = dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
+                const d = new Date(formatted);
+                if (isNaN(d.getTime())) return dateStr;
+                return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            } catch (e) {
+                return dateStr;
             }
         }
 
         async function loadDashboard() {
             const tbody = document.getElementById('incidentTableBody');
             try {
-                tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-slate-500 font-mono text-xs"><i class="ph ph-spinner animate-spin text-lg inline-block align-middle"></i> Fetching records...</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="px-6 py-12 text-center text-slate-500 font-mono text-xs"><i class="ph ph-spinner animate-spin text-lg inline-block align-middle"></i> Loading history...</td></tr>`;
                 
+                const search = document.getElementById('filterSearch').value;
                 const sevFilter = document.getElementById('filterSeverity').value;
-                const url = `/api/incidents?limit=20${sevFilter ? `&severity=${sevFilter}` : ''}`;
-                const data = await apiCall(url);
+                const statusFilter = document.getElementById('filterStatus').value;
                 
-                document.getElementById('dashTotal').textContent = data.total_count || data.count || 0;
-                document.getElementById('dashWeek').textContent = data.count || 0;
+                let query = `/api/incidents?limit=50`;
+                if (search) query += `&search=${encodeURIComponent(search)}`;
+                if (sevFilter) query += `&severity=${sevFilter}`;
+                if (statusFilter) query += `&status=${statusFilter}`;
+
+                const [data, analytics] = await Promise.all([
+                    apiCall(query).catch(() => ({ incidents: [], total_count: 0 })),
+                    apiCall('/api/incidents/analytics').catch(() => ({}))
+                ]);
+                
+                // Update KPI Cards from analytics
+                const totalCount = (analytics.total_incidents !== undefined) ? analytics.total_incidents : (data.total_count || 0);
+                document.getElementById('dashTotal').textContent = totalCount;
+                
+                const openCount = (analytics.open_incidents !== undefined) ? analytics.open_incidents : 0;
+                document.getElementById('dashWeek').textContent = openCount;
                 
                 let topEnv = "-";
-                if(data.incidents && data.incidents.length > 0) {
-                    const envs = {};
-                    let topCount = 0;
-                    data.incidents.forEach(i => {
-                        envs[i.environment] = (envs[i.environment] || 0) + 1;
-                        if (envs[i.environment] > topCount) {
-                            topCount = envs[i.environment];
-                            topEnv = i.environment;
-                        }
-                    });
+                if (analytics.top_environments && analytics.top_environments.length > 0) {
+                    topEnv = analytics.top_environments[0].environment;
+                } else if (data.incidents && data.incidents.length > 0) {
+                    topEnv = data.incidents[0].environment || "-";
                 }
                 document.getElementById('dashEnv').textContent = topEnv;
 
                 tbody.innerHTML = '';
                 if (!data.incidents || data.incidents.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-slate-500 font-medium bg-slate-800/20">No incidents match your criteria.</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="7" class="px-6 py-12 text-center text-slate-500 font-medium bg-slate-900/20">No incidents found matching criteria.</td></tr>`;
                     return;
                 }
 
                 data.incidents.forEach(inc => {
                     const badgeColor = inc.severity === 'Sev1' ? 'text-red-400 bg-red-400/10 border-red-400/30' :
-                                     inc.severity === 'Sev2' ? 'text-orange-400 bg-orange-400/10 border-orange-400/30' :
-                                     'text-yellow-400 bg-yellow-400/10 border-yellow-400/30';
+                                       inc.severity === 'Sev2' ? 'text-orange-400 bg-orange-400/10 border-orange-400/30' :
+                                       inc.severity === 'Sev3' ? 'text-yellow-400 bg-yellow-400/10 border-yellow-400/30' :
+                                       'text-blue-400 bg-blue-400/10 border-blue-400/30';
                     
+                    const statusColor = inc.status === 'Resolved' ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30' :
+                                        inc.status === 'Investigating' ? 'text-amber-400 bg-amber-400/10 border-amber-400/30' :
+                                        inc.status === 'Closed' ? 'text-slate-400 bg-slate-400/10 border-slate-400/30' :
+                                        'text-sky-400 bg-sky-400/10 border-sky-400/30';
+
                     const row = `
-                        <tr class="hover:bg-slate-800 transition-colors group cursor-pointer">
-                            <td class="px-6 py-4 font-mono text-slate-400 group-hover:text-primary transition-colors">#${inc.id}</td>
-                            <td class="px-6 py-4 text-slate-300 font-medium whitespace-nowrap">${new Date(inc.created_at).toLocaleDateString()}</td>
-                            <td class="px-6 py-4"><span class="bg-slate-800 border border-slate-600 shadow-sm text-slate-300 px-3 py-1 rounded-md text-xs font-semibold uppercase tracking-wider">${inc.environment}</span></td>
-                            <td class="px-6 py-4"><span class="border px-3 py-1 rounded-md text-xs font-bold uppercase tracking-widest ${badgeColor}">${inc.severity}</span></td>
-                            <td class="px-6 py-4 text-slate-400 truncate max-w-sm font-mono text-xs opacity-80 group-hover:opacity-100" title="${inc.error_log_preview}">${inc.error_log_preview.substring(0, 80)}...</td>
+                        <tr onclick="openIncidentModal(${inc.id})" class="hover:bg-slate-800/60 transition-colors group cursor-pointer">
+                            <td class="px-6 py-4 font-mono text-slate-400 group-hover:text-primary transition-colors font-bold">#${inc.id}</td>
+                            <td class="px-6 py-4 text-slate-300 font-medium whitespace-nowrap">${formatDateStr(inc.created_at)}</td>
+                            <td class="px-6 py-4"><span class="bg-slate-800 border border-slate-700 text-slate-300 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider">${inc.environment}</span></td>
+                            <td class="px-6 py-4"><span class="border px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-widest ${badgeColor}">${inc.severity}</span></td>
+                            <td class="px-6 py-4"><span class="border px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-widest ${statusColor}">${inc.status}</span></td>
+                            <td class="px-6 py-4 text-slate-400 truncate max-w-xs font-mono text-xs opacity-80 group-hover:opacity-100">${inc.error_log_preview ? inc.error_log_preview.substring(0, 75) : ''}...</td>
+                            <td class="px-6 py-4 text-right">
+                                <button class="text-xs text-primary font-semibold hover:underline">View</button>
+                            </td>
                         </tr>
                     `;
                     tbody.innerHTML += row;
                 });
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-red-400 bg-red-900/10 font-medium text-sm">Failed to load history: ${e.message}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="px-6 py-12 text-center text-red-400 bg-red-950/20 font-medium text-xs">Failed to load history: ${e.message}</td></tr>`;
             }
+        }
+
+        async function exportCSV() {
+            try {
+                const res = await fetch(`${API_URL}/api/incidents/export`, {
+                    headers: { 'Authorization': `Bearer ${currentToken}` }
+                });
+                if (!res.ok) throw new Error("CSV export failed");
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = "incident_history.csv";
+                a.click();
+            } catch (e) {
+                alert(e.message);
+            }
+        }
+
+        async function openIncidentModal(incidentId) {
+            activeIncidentId = incidentId;
+            const modal = document.getElementById('incidentModal');
+            const toast = document.getElementById('modalToast');
+            toast.classList.add('hidden');
+            
+            try {
+                const data = await apiCall(`/api/incidents/${incidentId}`);
+                activeIncidentData = data;
+                
+                document.getElementById('modalIncidentId').textContent = `Incident #${data.id}`;
+                document.getElementById('modalEnvBadge').textContent = data.environment;
+                document.getElementById('modalStatusSelect').value = data.status || 'Open';
+                
+                const sevBadge = document.getElementById('modalSevBadge');
+                sevBadge.textContent = data.severity;
+                sevBadge.className = `border px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${
+                    data.severity === 'Sev1' ? 'text-red-400 bg-red-400/10 border-red-400/30' :
+                    data.severity === 'Sev2' ? 'text-orange-400 bg-orange-400/10 border-orange-400/30' :
+                    'text-yellow-400 bg-yellow-400/10 border-yellow-400/30'
+                }`;
+
+                document.getElementById('modalRcaText').innerHTML = formatMarkdownWithTags(data.analysis_text || '');
+                
+                // Fetch audit events
+                const eventsData = await apiCall(`/api/incidents/${incidentId}/events`);
+                const eventsList = document.getElementById('modalEventsList');
+                eventsList.innerHTML = '';
+                if (eventsData.events && eventsData.events.length > 0) {
+                    eventsData.events.forEach(ev => {
+                        eventsList.innerHTML += `<div class="text-slate-400"><span class="text-slate-500">${ev.created_at}</span> - <span class="text-primary font-bold">${ev.event_type}</span>: ${ev.note || ''}</div>`;
+                    });
+                } else {
+                    eventsList.innerHTML = `<div class="text-slate-600">No prior events recorded.</div>`;
+                }
+
+                modal.classList.remove('hidden');
+            } catch (e) {
+                alert(`Failed to load incident detail: ${e.message}`);
+            }
+        }
+
+        function closeIncidentModal() {
+            document.getElementById('incidentModal').classList.add('hidden');
+        }
+
+        async function modalUpdateStatus() {
+            if (!activeIncidentId) return;
+            const newStatus = document.getElementById('modalStatusSelect').value;
+            try {
+                await apiCall(`/api/incidents/${activeIncidentId}/status`, 'PATCH', { status: newStatus });
+                showModalToast("Status updated successfully", "green");
+                loadDashboard();
+            } catch (e) {
+                showModalToast(`Failed to update status: ${e.message}`, "red");
+            }
+        }
+
+        async function modalSubmitOutcome() {
+            if (!activeIncidentId) return;
+            const outcome = document.getElementById('modalOutcomeType').value;
+            const note = document.getElementById('modalOutcomeNote').value;
+            try {
+                await apiCall(`/api/incidents/${activeIncidentId}/outcome`, 'POST', { outcome, note });
+                showModalToast("Resolution outcome recorded", "green");
+                openIncidentModal(activeIncidentId);
+            } catch (e) {
+                showModalToast(`Failed to record outcome: ${e.message}`, "red");
+            }
+        }
+
+        async function modalNotifySlack() {
+            if (!activeIncidentId) return;
+            try {
+                const res = await apiCall(`/api/incidents/${activeIncidentId}/notify-slack`, 'POST');
+                showModalToast(res.message || "Slack notification sent", "green");
+            } catch (e) {
+                showModalToast(`Slack error: ${e.message}`, "red");
+            }
+        }
+
+        async function modalJiraTicket() {
+            if (!activeIncidentId) return;
+            try {
+                const res = await apiCall(`/api/incidents/${activeIncidentId}/jira`, 'POST', { title: "", include_diff: true });
+                showModalToast(`Jira Ticket Linked: ${res.jira_issue_key}`, "green");
+            } catch (e) {
+                showModalToast(`Jira error: ${e.message}`, "red");
+            }
+        }
+
+        async function modalGitHubPR() {
+            if (!activeIncidentId) return;
+            try {
+                const res = await apiCall(`/api/incidents/${activeIncidentId}/github-pr`, 'POST', { title: "", include_diff: true });
+                showModalToast(`GitHub PR Scaffolded: ${res.pr_url}`, "green");
+            } catch (e) {
+                showModalToast(`GitHub error: ${e.message}`, "red");
+            }
+        }
+
+        async function modalPrintPostMortem() {
+            if (!activeIncidentData) return;
+            try {
+                showModalToast("Generating Post-Mortem Report...", "green");
+                const res = await apiCall('/api/postmortem', 'POST', {
+                    error_log: activeIncidentData.error_log,
+                    analysis_text: activeIncidentData.analysis_text
+                });
+                openPostMortemPrintModal(res.markdown, activeIncidentData.id);
+            } catch (e) {
+                showModalToast(`Post-Mortem error: ${e.message}`, "red");
+            }
+        }
+
+        function showModalToast(msg, color) {
+            const toast = document.getElementById('modalToast');
+            toast.textContent = msg;
+            toast.className = `p-3 rounded-xl border text-xs font-semibold ${color === 'green' ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800' : 'bg-red-950/60 text-red-300 border-red-800'}`;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 4000);
         }
 
         async function loadSettings() {
@@ -660,6 +1495,8 @@
                 document.getElementById('set-jira-key').value = data.jira_project_key || '';
                 document.getElementById('set-jira-email').value = data.jira_email || '';
                 document.getElementById('set-gh-repo').value = data.github_repo || '';
+                document.getElementById('set-generic-webhook').value = data.generic_webhook_url || '';
+                document.getElementById('set-generic-events').value = data.generic_webhook_events || 'all';
             } catch (e) {
                 console.error("Failed to load settings:", e);
             }
@@ -676,19 +1513,20 @@
                 jira_api_token: document.getElementById('set-jira-token').value,
                 github_repo: document.getElementById('set-gh-repo').value,
                 github_token: document.getElementById('set-gh-token').value,
-                generic_webhook_events: "all"
+                generic_webhook_url: document.getElementById('set-generic-webhook').value,
+                generic_webhook_events: document.getElementById('set-generic-events').value || "all"
             };
 
             const msgDiv = document.getElementById('settingsMsg');
             
             try {
                 await apiCall('/api/settings', 'PUT', payload);
-                msgDiv.innerHTML = `<i class="ph-fill ph-check-circle text-lg"></i> Configuration Saved Successfully`;
-                msgDiv.className = "text-center text-sm font-semibold py-3 px-4 rounded-xl mb-4 bg-green-900/30 text-green-400 border border-green-800/50 shadow-lg block flex items-center justify-center gap-2";
+                msgDiv.innerHTML = `<i class="ph-fill ph-check-circle text-base"></i> Integration Configuration Saved Successfully`;
+                msgDiv.className = "w-full text-center text-xs font-bold py-3 px-4 rounded-xl mb-4 bg-emerald-950/60 text-emerald-300 border border-emerald-800 shadow-lg block flex items-center justify-center gap-2";
                 setTimeout(() => msgDiv.classList.add('hidden'), 4000);
             } catch (e) {
-                msgDiv.innerHTML = `<i class="ph-fill ph-warning-circle text-lg"></i> Save Error: ${e.message}`;
-                msgDiv.className = "text-center text-sm font-semibold py-3 px-4 rounded-xl mb-4 bg-red-900/30 text-red-400 border border-red-800/50 shadow-lg block flex items-center justify-center gap-2";
+                msgDiv.innerHTML = `<i class="ph-fill ph-warning-circle text-base"></i> Save Error: ${e.message}`;
+                msgDiv.className = "w-full text-center text-xs font-bold py-3 px-4 rounded-xl mb-4 bg-red-950/60 text-red-300 border border-red-800 shadow-lg block flex items-center justify-center gap-2";
             }
         }
 
