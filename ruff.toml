@@ -1,0 +1,25 @@
+# Ruff configuration for PatchOps.
+#
+# Line length: this codebase's established style favors long, prose-heavy
+# comments and docstrings (explaining *why*, not just *what*) over strict
+# 79/88-char wrapping. Reformatting hundreds of existing lines to satisfy
+# a stricter limit would fight that convention for no real readability
+# gain, so line-length is relaxed rather than disabled outright - it still
+# catches genuinely unreadable single-statement lines beyond 120 chars.
+line-length = 120
+
+[lint]
+select = ["E", "F", "W"]
+
+[lint.per-file-ignores]
+# main.py deliberately calls load_dotenv() BEFORE importing incident_store
+# and auth - both of those modules read environment variables (JWT_SECRET_KEY,
+# INCIDENT_DB_PATH, etc.) at import time via os.getenv(...), so the import
+# order here is load-bearing, not a style slip. E402 (module level import
+# not at top of file) would otherwise flag this as broken import ordering.
+#
+# E501 is also ignored here specifically: main.py's remaining long lines
+# are all inside the LLM system prompt and the mock-mode sample analysis
+# text (deliberately prose-length content, not code structure) - wrapping
+# those would fight readability of the actual prompt text for no benefit.
+"main.py" = ["E402", "E501"]

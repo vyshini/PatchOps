@@ -22,6 +22,11 @@ Deliberately kept simple for a single-instance deployment:
   - Cosine similarity computed in plain Python/math, no numpy dependency,
     since embeddings here are only ~768 floats and we're comparing
     against at most a few thousand rows per request.
+
+Phase E adds three integration-tracking columns on `incidents`
+(jira_issue_key, github_pr_url, slack_thread_ts) so the app can remember
+"we already have a Jira ticket / PR / Slack thread for this incident" and
+update-in-place instead of creating duplicates on a second click.
 """
 
 import os
@@ -37,7 +42,7 @@ from typing import Dict, List, Optional, Tuple
 import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPICallError
 
-logger = logging.getLogger("sre-copilot")
+logger = logging.getLogger("patchops")
 
 DB_PATH = os.getenv("INCIDENT_DB_PATH", "incidents.db")
 
@@ -180,6 +185,23 @@ def init_db() -> None:
             conn.execute("ALTER TABLE incidents ADD COLUMN duplicate_of_id INTEGER")
         except sqlite3.OperationalError:
             pass
+        # --- Phase E: integration-tracking columns ---------------------
+        # These remember the external artifact we already created for an
+        # incident, so a second click on "Create Jira Ticket" / "Open
+        # GitHub PR" updates the existing thing instead of spawning a
+        # duplicate ticket/PR every time.
+        try:
+            conn.execute("ALTER TABLE incidents ADD COLUMN jira_issue_key TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE incidents ADD COLUMN github_pr_url TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE incidents ADD COLUMN slack_thread_ts TEXT")
+        except sqlite3.OperationalError:
+            pass
         try:
             conn.execute("ALTER TABLE users ADD COLUMN slack_webhook_url TEXT")
         except sqlite3.OperationalError:
@@ -206,6 +228,30 @@ def init_db() -> None:
             pass
         try:
             conn.execute("ALTER TABLE users ADD COLUMN github_token TEXT")
+        except sqlite3.OperationalError:
+            pass
+        # --- Phase E: Slack bot mode (enables threading) + generic
+        # outbound webhook config. slack_webhook_url (Incoming Webhook)
+        # remains supported for one-shot posts; slack_bot_token +
+        # slack_channel_id unlock chat.postMessage, which returns a
+        # message `ts` we can reply to in-thread for follow-up events
+        # (status changes, outcome feedback) on the same incident.
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN slack_bot_token TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN slack_channel_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN generic_webhook_url TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN generic_webhook_events TEXT NOT NULL DEFAULT 'all'"
+            )
         except sqlite3.OperationalError:
             pass
         conn.execute(
@@ -262,6 +308,16 @@ VALID_STATUSES = ("Open", "Investigating", "Resolved")
 VALID_SEVERITIES = ("Sev1", "Sev2", "Sev3", "Sev4", "Unknown")
 VALID_OUTCOMES = ("worked", "partial", "failed")
 OUTCOME_SCORES = {"worked": 1.0, "partial": 0.5, "failed": 0.0}
+
+# Event types the generic outbound webhook (Phase E) can fire for. Kept
+# as a module constant so main.py's dispatcher and any future settings-UI
+# "which events do you want" picker stay in sync with what's actually
+# emitted, rather than each guessing at the same string literals.
+WEBHOOK_EVENT_TYPES = (
+    "incident_created",
+    "status_changed",
+    "outcome_recorded",
+)
 
 
 def _insert_event(
@@ -616,12 +672,24 @@ def get_incidents_for_user(
     conn = sqlite3.connect(DB_PATH)
     try:
         total_count_row = conn.execute(
-            f"SELECT COUNT(*) FROM incidents WHERE {where_clause}",
+            # where_clause is built entirely from hardcoded fragments in
+            # _build_incident_where_clause() (e.g. "user_id = ?"); every
+            # actual value is still bound via the `params` list below as
+            # `?` placeholders, never string-interpolated.
+            f"SELECT COUNT(*) FROM incidents WHERE {where_clause}",  # nosec B608
             params,
         ).fetchone()
         total_count = total_count_row[0] if total_count_row else 0
 
         rows = conn.execute(
+            # Same where_clause guarantee as above. The two other
+            # interpolated fragments here are also never raw user input:
+            # normalized_sort_by is looked up through the
+            # SORTABLE_INCIDENT_FIELDS allowlist dict (falls back to
+            # "created_at" for anything not in it), and
+            # normalized_sort_order is hardcoded to literally "ASC" or
+            # "DESC" by a ternary - neither can carry attacker-controlled
+            # text into the query.
             f"""
             SELECT
                 i.id,
@@ -633,6 +701,8 @@ def get_incidents_for_user(
                 i.status,
                 i.fingerprint,
                 i.duplicate_of_id,
+                i.jira_issue_key,
+                i.github_pr_url,
                 CASE
                     WHEN i.fingerprint IS NULL THEN 1
                     ELSE (
@@ -646,7 +716,7 @@ def get_incidents_for_user(
             WHERE {where_clause}
             ORDER BY i.{normalized_sort_by} {normalized_sort_order}
             LIMIT ? OFFSET ?
-            """,
+            """,  # nosec B608
             [*params, limit, offset],
         ).fetchall()
         outcome_stats = _get_outcome_stats_for_incidents(conn, user_id)
@@ -664,7 +734,9 @@ def get_incidents_for_user(
             "status": row[6],
             "fingerprint": row[7],
             "duplicate_of_id": row[8],
-            "duplicate_count": row[9],
+            "jira_issue_key": row[9],
+            "github_pr_url": row[10],
+            "duplicate_count": row[11],
             "historical_success_rate": outcome_stats.get(row[0], {}).get("historical_success_rate"),
             "outcome_samples": outcome_stats.get(row[0], {}).get("outcome_samples", 0),
         }
@@ -702,6 +774,9 @@ def get_incident_by_id(incident_id: int, user_id: int) -> Optional[dict]:
                 i.resolved_at,
                 i.fingerprint,
                 i.duplicate_of_id,
+                i.jira_issue_key,
+                i.github_pr_url,
+                i.slack_thread_ts,
                 CASE
                     WHEN i.fingerprint IS NULL THEN 1
                     ELSE (
@@ -734,7 +809,10 @@ def get_incident_by_id(incident_id: int, user_id: int) -> Optional[dict]:
         "resolved_at": row[7],
         "fingerprint": row[8],
         "duplicate_of_id": row[9],
-        "duplicate_count": row[10],
+        "jira_issue_key": row[10],
+        "github_pr_url": row[11],
+        "slack_thread_ts": row[12],
+        "duplicate_count": row[13],
         "historical_success_rate": outcome_stats.get("historical_success_rate"),
         "outcome_samples": outcome_stats.get("outcome_samples", 0),
     }
@@ -770,11 +848,17 @@ def update_incident_status(incident_id: int, user_id: int, new_status: str) -> O
         previous_status = current_row[0]
         resolved_at_value = "datetime('now')" if new_status == "Resolved" else "NULL"
         conn.execute(
+            # resolved_at_value is one of exactly two hardcoded literals
+            # chosen by the ternary above ("datetime('now')" or "NULL"),
+            # never derived from new_status text itself; new_status is
+            # separately validated against VALID_STATUSES before this
+            # point and is still passed as a `?` parameter, not
+            # interpolated.
             f"""
             UPDATE incidents
             SET status = ?, resolved_at = {resolved_at_value}
             WHERE id = ? AND user_id = ?
-            """,
+            """,  # nosec B608
             (new_status, incident_id, user_id),
         )
 
@@ -797,6 +881,81 @@ def update_incident_status(incident_id: int, user_id: int, new_status: str) -> O
         conn.close()
 
     return {"id": row[0], "status": row[1], "resolved_at": row[2]}
+
+
+def set_incident_jira_key(incident_id: int, user_id: int, jira_issue_key: str) -> Optional[dict]:
+    """
+    Records the Jira issue key created/linked for this incident, so a
+    later click on "Create Jira Ticket" knows to add a comment to the
+    existing ticket instead of opening a duplicate one. Scoped by
+    user_id for the same IDOR reasons as every other incident mutation
+    here.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            "UPDATE incidents SET jira_issue_key = ? WHERE id = ? AND user_id = ?",
+            (jira_issue_key, incident_id, user_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        _insert_event(
+            conn=conn,
+            incident_id=incident_id,
+            user_id=user_id,
+            event_type="jira_ticket_linked",
+            note=f"Linked Jira issue {jira_issue_key}.",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": incident_id, "jira_issue_key": jira_issue_key}
+
+
+def set_incident_github_pr(incident_id: int, user_id: int, pr_url: str) -> Optional[dict]:
+    """Records the GitHub PR URL scaffolded for this incident's patch."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            "UPDATE incidents SET github_pr_url = ? WHERE id = ? AND user_id = ?",
+            (pr_url, incident_id, user_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        _insert_event(
+            conn=conn,
+            incident_id=incident_id,
+            user_id=user_id,
+            event_type="github_pr_created",
+            note=f"Opened GitHub PR scaffold: {pr_url}.",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": incident_id, "github_pr_url": pr_url}
+
+
+def set_incident_slack_thread(incident_id: int, user_id: int, thread_ts: str) -> Optional[dict]:
+    """
+    Records the Slack message `ts` for the FIRST bot-mode post about this
+    incident, so subsequent notifications (status changes, outcome
+    feedback) can reply in-thread rather than posting a new top-level
+    message each time. Only relevant when the user has configured a Slack
+    bot token + channel (see auth.py); webhook-only Slack setups have no
+    `ts` to thread against.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            "UPDATE incidents SET slack_thread_ts = ? WHERE id = ? AND user_id = ?",
+            (thread_ts, incident_id, user_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": incident_id, "slack_thread_ts": thread_ts}
 
 
 def log_incident_event(
@@ -1001,13 +1160,18 @@ def get_incident_analytics(user_id: int, days: int = ANALYTICS_DEFAULT_DAYS) -> 
         ).fetchall()
 
         daily_rows = conn.execute(
+            # bounded_days is `max(1, min(days, ANALYTICS_MAX_DAYS))`, an
+            # int clamped to a fixed numeric range (and `days` itself is
+            # already constrained by FastAPI's `Query(..., ge=1, le=180)`
+            # upstream in main.py) - it can never carry a SQL-injection
+            # payload.
             f"""
             SELECT date(created_at) as day, COUNT(*)
             FROM incidents
             WHERE user_id = ? AND created_at >= datetime('now', '-{bounded_days - 1} days')
             GROUP BY day
             ORDER BY day ASC
-            """,
+            """,  # nosec B608
             (user_id,),
         ).fetchall()
         daily_map = {row[0]: row[1] for row in daily_rows}

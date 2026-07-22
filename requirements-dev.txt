@@ -1,0 +1,27 @@
+# Dev/test-only dependencies - NOT installed in the production Docker
+# image. Install with: pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+# 9.0.3 (not 8.3.3) - 8.3.3 has a known CVE per pip-audit; 9.0.3 is the
+# fix version. Requires pytest-asyncio>=1.3.0 in turn (older
+# pytest-asyncio releases cap at pytest<9) - both versions below were
+# verified together against the full 69-test suite before pinning.
+pytest==9.0.3
+pytest-asyncio==1.3.0
+
+# respx mocks httpx's transport layer directly, so tests exercising the
+# Slack/Jira/GitHub integrations (all built on httpx.AsyncClient) never
+# make real network calls, while still exercising the exact request
+# bodies/URLs main.py constructs.
+#
+# Pinned to 0.22.0 specifically - 0.21.1 has a breaking incompatibility
+# with the module-level `@respx.mock` decorator usage in
+# tests/test_integrations.py (routes registered inside the decorated
+# function aren't picked up by the active router, causing every mocked
+# call to fail with AllMockedAssertionError). Verified by actually
+# installing 0.21.1 and watching 7 integration tests fail with that
+# exact error, then confirming 0.22.0 fixes it with all 69 tests passing.
+respx==0.22.0
+
+# Linting, used by the CI pipeline (Phase F).
+ruff==0.7.4

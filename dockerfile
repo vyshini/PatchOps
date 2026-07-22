@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# SRE AI Copilot - Dockerfile
+# PatchOps - Dockerfile
 # ---------------------------------------------------------------------------
 # python:3.10-slim is a stripped-down Debian base with just enough to run
 # Python - far smaller than the full python:3.10 image, which matters both

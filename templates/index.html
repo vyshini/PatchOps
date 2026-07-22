@@ -1,1821 +1,698 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>PatchOps</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PatchOps - Enterprise Incident Hub</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    
+    <!-- Marked, DOMPurify, Mermaid, Diff2Html -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
 
-<!-- Tailwind via CDN - no build step -->
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        colors: {
-          graphite: '#0A0E13',
-          panel: '#121821',
-          panel2: '#1A222C',
-          line: '#26313D',
-          ink: '#E7ECF2',
-          inkdim: '#8D99A9',
-          inkfaint: '#5B6672',
-          signal: '#FF6A39',
-          ok: '#33D17A',
-          info: '#4FA8FF',
-        },
-        fontFamily: {
-          mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
-          sans: ['"Inter"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        },
-      },
-    },
-  };
-</script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: { primary: '#f97316', surface: '#0f172a', surfaceAlt: '#1e293b' },
+                    fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'], mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'] }
+                }
+            }
+        }
+        mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+    </script>
 
-<!-- marked.js - Markdown -> HTML rendering for the streamed analysis -->
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<!-- mermaid.js - renders the Architecture Impact diagram -->
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-<!-- diff2html - renders the git diff patch as a readable view -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
-<script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html-ui.min.js"></script>
-<!-- Chart.js - renders the dashboard's severity breakdown chart -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-<style>
-  :root {
-    color-scheme: dark;
-  }
-  * { font-family: 'Inter', ui-sans-serif, sans-serif; }
-  .font-display, h1, h2, .mono-ui, #currentUsernameLabel, #dashboardDetailMeta,
-  .view-tab, .auth-tab, .env-badge, .severity-badge, .status-badge,
-  .confidence-high, .confidence-inferred, .similar-incident-score,
-  #statusBar, #charCount, button, select, .status-select {
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
-  }
+        body { background-color: #0f172a; color: #cbd5e1; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
 
-  body { background-color: #0A0E13; }
+        /* Custom Markdown Styles */
+        .markdown-body h1, .markdown-body h2 { font-weight: 700; margin-top: 1.5rem; margin-bottom: 1rem; text-transform: uppercase; font-size: 1.1rem; letter-spacing: 0.05em; color: #f97316; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
+        .markdown-body p { margin-bottom: 1rem; line-height: 1.6; }
+        .markdown-body ul { list-style-type: none; padding-left: 0; margin-bottom: 1rem; }
+        .markdown-body li { margin-bottom: 0.75rem; padding-left: 1.5rem; position: relative; }
+        .markdown-body li::before { content: "•"; color: #f97316; position: absolute; left: 0; font-weight: bold; }
+        .markdown-body code { background-color: #1e293b; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-family: monospace; color: #38bdf8; font-size: 0.9em; }
 
-  /* --- Live status bar: the signature element. A thin NOC-style strip
-     that mimics a monitoring header — a heartbeat dot, a running clock,
-     and a static "signal" readout. It's decorative in that it doesn't
-     wire to a real backend metric, but it's built from the same visual
-     vocabulary an SRE looks at all day, which is the point. --- */
-  #statusBar {
-    background: #05070A;
-    border-bottom: 1px solid #1D2731;
-    font-size: 0.7rem;
-    letter-spacing: 0.04em;
-  }
-  .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 9999px;
-    background: #33D17A;
-    box-shadow: 0 0 0 0 rgba(51, 209, 122, 0.6);
-    animation: pulse-dot 2s ease-out infinite;
-  }
-  @keyframes pulse-dot {
-    0%   { box-shadow: 0 0 0 0 rgba(51, 209, 122, 0.55); }
-    70%  { box-shadow: 0 0 0 6px rgba(51, 209, 122, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(51, 209, 122, 0); }
-  }
+        /* Confidence Tags */
+        .tag-high { background-color: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34,197,94,0.4); padding: 0.2rem 0.6rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; margin-right: 0.5rem; display: inline-flex; align-items: center; vertical-align: middle; }
+        .tag-inferred { background-color: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid rgba(234,179,8,0.4); padding: 0.2rem 0.6rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; margin-right: 0.5rem; display: inline-flex; align-items: center; vertical-align: middle;}
 
-  #resultBox pre:not(.mermaid):not(.d2h-wrapper pre) {
-    background: #05070A;
-    color: #E7ECF2;
-    border: 1px solid #26313D;
-    padding: 0.75rem;
-    border-radius: 0.5rem;
-    overflow-x: auto;
-    margin: 0.5rem 0;
-  }
-  #resultBox code {
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 0.85rem;
-    color: #E7ECF2;
-  }
-  #resultBox, #dashboardResultBox { color: #C7D0DA; }
-  #resultBox strong, #dashboardResultBox strong { color: #E7ECF2; }
-  #resultBox h2, #dashboardResultBox h2 {
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 0.95rem;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    margin-top: 1.5rem;
-    margin-bottom: 0.5rem;
-    color: #FF6A39;
-    border-top: 1px solid #26313D;
-    padding-top: 1.25rem;
-  }
-  #resultBox h2:first-child, #dashboardResultBox h2:first-child { border-top: none; padding-top: 0; }
-  #resultBox ul, #dashboardResultBox ul { list-style: disc; padding-left: 1.5rem; }
-  #resultBox a, #dashboardResultBox a { color: #4FA8FF; }
+        /* ROBUST DIFF2HTML DARK MODE OVERRIDES */
+        .d2h-wrapper, .d2h-file-wrapper { background-color: #0b0f19 !important; border: 1px solid #334155 !important; border-radius: 0.75rem !important; overflow: hidden; }
+        .d2h-file-header { background-color: #1e293b !important; border-bottom: 1px solid #334155 !important; color: #f8fafc !important; }
+        .d2h-file-name { color: #38bdf8 !important; font-weight: 600 !important; }
+        .d2h-code-line { color: #e2e8f0 !important; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important; font-size: 0.85rem !important; }
+        .d2h-code-line-prefix { background-color: transparent !important; color: #64748b !important; border: none !important; }
+        .d2h-code-linenumber { background-color: #162032 !important; border-color: #334155 !important; color: #64748b !important; }
+        
+        .d2h-ins { background-color: rgba(22, 101, 52, 0.35) !important; border-color: rgba(34, 197, 94, 0.3) !important; }
+        .d2h-code-line ins, .d2h-code-line ins .d2h-code-line-ctn { background-color: transparent !important; color: #4ade80 !important; text-decoration: none !important; }
+        
+        .d2h-del { background-color: rgba(127, 29, 29, 0.35) !important; border-color: rgba(239, 68, 68, 0.3) !important; }
+        .d2h-code-line del, .d2h-code-line del .d2h-code-line-ctn { background-color: transparent !important; color: #f87171 !important; text-decoration: none !important; }
+        
+        .d2h-info { background-color: #1e293b !important; color: #94a3b8 !important; border-color: #334155 !important; }
+        .d2h-emptyplaceholder { background-color: #0f172a !important; border-color: #334155 !important; }
 
-  .typing-cursor::after {
-    content: "▍";
-    animation: blink 1s step-start infinite;
-    color: #FF6A39;
-  }
-  @keyframes blink { 50% { opacity: 0; } }
-
-  .mermaid-container {
-    background: #0D1319;
-    border: 1px solid #26313D;
-    border-radius: 0.5rem;
-    padding: 1rem;
-    overflow-x: auto;
-    display: flex;
-    justify-content: center;
-  }
-
-  /* --- Confidence tagging badges --- */
-  .confidence-high {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #0A0E13;
-    background: #33D17A;
-    padding: 0.1rem 0.5rem;
-    border-radius: 3px;
-    margin-right: 0.4rem;
-    vertical-align: middle;
-  }
-  .confidence-inferred {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #0A0E13;
-    background: #E8B84B;
-    padding: 0.1rem 0.5rem;
-    border-radius: 3px;
-    margin-right: 0.4rem;
-    vertical-align: middle;
-  }
-
-  /* --- Similar past incidents panel --- */
-  .similar-incident-card {
-    background: #0D1319;
-    border: 1px solid #26313D;
-    border-left: 3px solid #4FA8FF;
-    border-radius: 0.375rem;
-    padding: 0.6rem 0.85rem;
-    font-size: 0.8rem;
-    color: #C7D0DA;
-  }
-  .similar-incident-score {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 700;
-    color: #0A0E13;
-    background: #4FA8FF;
-    padding: 0.1rem 0.5rem;
-    border-radius: 3px;
-    margin-right: 0.5rem;
-  }
-
-  /* --- Multi-log correlation input cards --- */
-  .log-source-card {
-    border: 1px solid #26313D;
-    border-radius: 0.5rem;
-    padding: 0.75rem;
-    background: #0D1319;
-    margin-top: 0.75rem;
-  }
-
-  /* --- Auth screen (login/register gate) --- */
-  #authScreen {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background:
-      radial-gradient(ellipse 60% 40% at 50% 0%, rgba(255, 106, 57, 0.10), transparent),
-      #0A0E13;
-  }
-  #authScreen.hidden { display: none; }
-  .auth-tab {
-    flex: 1;
-    text-align: center;
-    padding: 0.6rem 0;
-    font-size: 0.8rem;
-    letter-spacing: 0.03em;
-    font-weight: 600;
-    color: #5B6672;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-  }
-  .auth-tab.active { color: #FF6A39; border-bottom-color: #FF6A39; }
-
-  /* --- Dashboard: view tabs (New Analysis vs Dashboard) --- */
-  .view-tab {
-    padding: 0.65rem 1rem;
-    font-size: 0.8rem;
-    letter-spacing: 0.03em;
-    font-weight: 600;
-    color: #5B6672;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-    background: none;
-    border-top: none;
-    border-left: none;
-    border-right: none;
-  }
-  .view-tab.active { color: #FF6A39; border-bottom-color: #FF6A39; }
-
-  /* --- Dashboard: incident history list --- */
-  .incident-card {
-    background: #121821;
-    border: 1px solid #26313D;
-    border-left: 3px solid #26313D;
-    border-radius: 0.5rem;
-    padding: 0.85rem 1rem;
-    cursor: pointer;
-    transition: border-color 0.15s, transform 0.1s;
-  }
-  .incident-card:hover {
-    border-left-color: #FF6A39;
-    border-color: #35414D;
-    transform: translateX(1px);
-  }
-  .env-badge {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    color: #8D99A9;
-    background: #1A222C;
-    border: 1px solid #26313D;
-    padding: 0.15rem 0.55rem;
-    border-radius: 3px;
-  }
-  .stat-card {
-    background: #121821;
-    border: 1px solid #26313D;
-    border-radius: 0.5rem;
-    padding: 1rem 1.25rem;
-  }
-
-  /* --- Severity badges - color intensity signals urgency at a glance --- */
-  .severity-badge {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.03em;
-    padding: 0.15rem 0.55rem;
-    border-radius: 3px;
-    margin-right: 0.4rem;
-  }
-  .severity-sev1 { color: #FCA5A5; background: rgba(220, 38, 38, 0.15); border: 1px solid rgba(252, 165, 165, 0.35); }
-  .severity-sev2 { color: #FDBA74; background: rgba(234, 88, 12, 0.15); border: 1px solid rgba(253, 186, 116, 0.35); }
-  .severity-sev3 { color: #FDE68A; background: rgba(202, 138, 4, 0.15); border: 1px solid rgba(253, 230, 138, 0.35); }
-  .severity-sev4 { color: #93C5FD; background: rgba(37, 99, 235, 0.15); border: 1px solid rgba(147, 197, 253, 0.35); }
-  .severity-unknown { color: #8D99A9; background: #1A222C; border: 1px solid #26313D; }
-
-  /* --- Status badges (read-only, shown on list cards) --- */
-  .status-badge {
-    display: inline-block;
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.03em;
-    padding: 0.15rem 0.55rem;
-    border-radius: 3px;
-  }
-  .status-open { color: #93C5FD; background: rgba(37, 99, 235, 0.15); }
-  .status-investigating { color: #FDE68A; background: rgba(202, 138, 4, 0.15); }
-  .status-resolved { color: #86EFAC; background: rgba(51, 209, 122, 0.15); }
-
-  .status-select {
-    border: 1px solid #35414D;
-    border-radius: 0.375rem;
-    padding: 0.3rem 0.6rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    background: #1A222C;
-    color: #E7ECF2;
-  }
-
-  ::selection { background: rgba(255, 106, 57, 0.35); }
-
-  ::placeholder { color: #4A5561; }
-
-  /* focus visibility kept explicit and consistent across every input */
-  input:focus, select:focus, textarea:focus, button:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(255, 106, 57, 0.45);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .status-dot, .typing-cursor::after { animation: none; }
-  }
-</style>
+        .typewriter:after { content: '|'; animation: blink 1s step-start infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+        
+        .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(51, 65, 85, 0.8); }
+    </style>
 </head>
+<body class="min-h-screen flex flex-col font-sans">
 
-<body class="bg-graphite min-h-screen text-ink">
-
-  <!-- Live status strip - the one signature flourish, kept quiet and out
-       of the way of the actual working surfaces below it. -->
-  <div id="statusBar" class="w-full px-4 py-1.5 flex items-center justify-center gap-2 text-inkdim">
-    <span class="status-dot"></span>
-    <span>SYSTEM NOMINAL</span>
-    <span class="text-inkfaint">·</span>
-    <span id="statusClock">--:--:--</span>
-    <span class="text-inkfaint">·</span>
-    <span>PatchOps/v1</span>
-  </div>
-
-  <!-- Auth gate: shown until a valid token is confirmed via /api/me.
-       The main app markup below is wrapped in #appContent, hidden until
-       login succeeds - this keeps the two states mutually exclusive
-       without needing a client-side router for a single-page tool. -->
-  <div id="authScreen">
-    <div class="bg-panel rounded-xl border border-line p-6 w-full max-w-sm mx-4">
-      <h1 class="text-xl font-bold text-ink mb-1">🛠️ PatchOps</h1>
-      <p class="text-inkdim text-sm mb-5">Sign in to analyze incidents and view your history.</p>
-
-      <div class="flex border-b border-line mb-4">
-        <div id="loginTab" class="auth-tab active">Log In</div>
-        <div id="registerTab" class="auth-tab">Register</div>
-      </div>
-
-      <div id="authStatus" class="hidden mb-3 px-3 py-2 rounded-lg text-xs font-medium"></div>
-
-      <form id="authForm" class="space-y-3">
-        <div>
-          <label class="block text-xs font-medium text-inkdim mb-1">Username</label>
-          <input id="authUsername" type="text" autocomplete="username" required
-            class="w-full bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm" />
-        </div>
-        <div id="authEmailField" class="hidden">
-          <label class="block text-xs font-medium text-inkdim mb-1">Email</label>
-          <input id="authEmail" type="email" autocomplete="email"
-            class="w-full bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm" />
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-inkdim mb-1">Password</label>
-          <input id="authPassword" type="password" autocomplete="current-password" required
-            class="w-full bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm" />
-          <p id="authPasswordHint" class="hidden text-xs text-inkfaint mt-1">At least 8 characters.</p>
-        </div>
-        <button id="authSubmitBtn" type="submit"
-          class="w-full bg-signal hover:bg-orange-500 disabled:bg-line disabled:text-inkfaint text-graphite font-semibold px-4 py-2.5 rounded-lg text-sm transition-colors">
-          Log In
-        </button>
-      </form>
-    </div>
-  </div>
-
-  <div id="appContent" class="hidden">
-  <div class="max-w-5xl mx-auto px-4 py-8">
-
-    <header class="mb-6 flex items-start justify-between gap-3">
-      <div>
-        <h1 class="text-2xl sm:text-3xl font-bold text-ink">🛠️ PatchOps</h1>
-        <p class="text-inkdim mt-1 text-sm sm:text-base font-sans">
-          Enterprise Incident Resolution Hub — RCA, architecture diagrams, and remediation patches, in real time.
-        </p>
-      </div>
-      <div class="flex items-center gap-2 text-sm text-inkdim whitespace-nowrap pt-1">
-        <span id="currentUsernameLabel"></span>
-        <button id="logoutBtn" class="text-xs bg-panel2 hover:bg-line text-ink px-3 py-1.5 rounded-md font-medium border border-line">
-          Log Out
-        </button>
-      </div>
-    </header>
-
-    <!-- View switcher: New Analysis (the existing analyzer tool) vs
-         Dashboard (incident history). Kept as simple show/hide toggles
-         rather than a client-side router - this is a single-page tool,
-         not a multi-route app, so a router would be more machinery than
-         the problem needs. -->
-    <div class="flex gap-1 mb-6 border-b border-line">
-      <button id="analyzerTabBtn" type="button" class="view-tab active">🔍 New Analysis</button>
-      <button id="dashboardTabBtn" type="button" class="view-tab">📊 Dashboard</button>
-    </div>
-
-    <div id="analyzerView">
-    <!-- Input card -->
-    <div class="bg-panel rounded-xl border border-line p-4 sm:p-6 mb-6">
-      <div class="flex flex-col sm:flex-row sm:items-center gap-3 mb-3">
-        <label for="environmentSelect" class="text-sm font-medium text-inkdim">Environment:</label>
-        <select id="environmentSelect"
-          class="bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm w-full sm:w-auto">
-          <option>General</option>
-          <option>Docker</option>
-          <option>Python</option>
-          <option>Kubernetes</option>
-          <option>AWS</option>
-          <option>Node.js</option>
-          <option>Database</option>
-        </select>
-      </div>
-
-      <label class="block text-sm font-medium text-inkdim mb-1 font-sans">Primary Error Log <span class="text-signal">*</span></label>
-      <textarea id="errorLogInput" rows="8" placeholder="Paste your error log / stack trace / crash dump here..."
-        class="w-full bg-panel2 border border-line text-ink rounded-lg p-3 font-mono text-sm resize-y mb-4"></textarea>
-
-      <!-- Multi-log correlation section -->
-      <div class="flex items-center justify-between mb-1">
-        <label class="block text-sm font-medium text-inkdim font-sans">
-          Additional Log Sources
-          <span class="text-inkfaint font-normal">(optional — correlate logs from other services for this same incident)</span>
-        </label>
-        <button id="addLogSourceBtn" type="button"
-          class="text-xs bg-panel2 hover:bg-line text-ink px-3 py-1.5 rounded-md font-medium border border-line whitespace-nowrap">
-          + Add log source
-        </button>
-      </div>
-      <div id="logSourcesContainer"></div>
-
-      <label class="block text-sm font-medium text-inkdim mb-1 mt-4 font-sans">
-        Source Code <span class="text-inkfaint font-normal">(optional — improves diff accuracy)</span>
-      </label>
-      <textarea id="sourceCodeInput" rows="8" placeholder="Paste the relevant source file(s) here for a precise git diff fix..."
-        class="w-full bg-panel2 border border-line text-ink rounded-lg p-3 font-mono text-sm resize-y"></textarea>
-
-      <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mt-4">
-        <span id="charCount" class="text-xs text-inkfaint">0 characters total</span>
-        <button id="analyzeBtn"
-          class="bg-signal hover:bg-orange-500 disabled:bg-line disabled:text-inkfaint disabled:cursor-not-allowed text-graphite font-semibold px-5 py-2.5 rounded-lg transition-colors w-full sm:w-auto">
-          Analyze Incident
-        </button>
-      </div>
-    </div>
-
-    <div id="statusBox" class="hidden mb-4 px-4 py-3 rounded-lg text-sm font-medium font-sans"></div>
-
-    <!-- Result card -->
-    <div id="resultCard" class="hidden bg-panel rounded-xl border border-line p-4 sm:p-6 mb-6">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-sm font-semibold text-inkdim uppercase tracking-wide">Analysis</h2>
-        <div class="flex items-center gap-3">
-          <button id="copyBtn" class="text-xs text-info hover:text-sky-300 hidden">Copy</button>
-          <button id="postmortemBtn"
-            class="hidden text-xs bg-panel2 hover:bg-line text-ink border border-line px-3 py-1.5 rounded-md font-medium">
-            📄 Generate Post-Mortem
-          </button>
-          <div id="postmortemFormatButtons" class="hidden items-center gap-2">
-            <button id="downloadMdBtn"
-              class="text-xs bg-panel2 hover:bg-line text-ink px-3 py-1.5 rounded-md font-medium border border-line">
-              ⬇ Markdown
-            </button>
-            <button id="downloadPdfBtn"
-              class="text-xs bg-signal hover:bg-orange-500 text-graphite px-3 py-1.5 rounded-md font-semibold">
-              🖨 PDF (Print)
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div id="resultBox" class="prose prose-invert prose-sm max-w-none font-sans"></div>
-
-      <div id="similarIncidentsSection" class="hidden mt-4">
-        <h3 class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-2">
-          Similar Past Incidents
-        </h3>
-        <div id="similarIncidentsContainer" class="space-y-2"></div>
-      </div>
-
-      <div id="diagramSection" class="hidden mt-4">
-        <h3 class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-2">Architecture Impact</h3>
-        <div id="mermaidContainer" class="mermaid-container"></div>
-      </div>
-
-      <div id="diffSection" class="hidden mt-4">
-        <h3 class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-2">Git Patch</h3>
-        <div id="diffContainer"></div>
-      </div>
-    </div>
-
-    <div id="postmortemStatus" class="hidden mb-4 px-4 py-3 rounded-lg text-sm font-medium font-sans"></div>
-
-    <!-- Hidden iframe used purely as a print target for the post-mortem
-         PDF. We write a clean, standalone HTML document into it and call
-         its own contentWindow.print() - this uses the browser's native
-         print-to-PDF pipeline (real vector text, not a rasterized image)
-         instead of a JS screenshot library, which is far more reliable. -->
-    <iframe id="postmortemPrintFrame" style="position: absolute; width: 0; height: 0; border: 0; visibility: hidden;"></iframe>
-
-    </div><!-- /#analyzerView -->
-
-    <!-- Dashboard view: incident history for the logged-in user. Hidden
-         until the "Dashboard" tab is clicked, at which point its data is
-         fetched fresh from /api/incidents (not preloaded on page load,
-         since most sessions will start with a new analysis, not a
-         history browse). -->
-    <div id="dashboardView" class="hidden">
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-        <div class="stat-card">
-          <div class="text-2xl font-bold text-ink" id="statTotalIncidents">0</div>
-          <div class="text-xs text-inkdim mt-1 font-sans">Total Incidents Analyzed</div>
-        </div>
-        <div class="stat-card">
-          <div class="text-2xl font-bold text-ink" id="statTopEnvironment">—</div>
-          <div class="text-xs text-inkdim mt-1 font-sans">Most Common Environment</div>
-        </div>
-        <div class="stat-card">
-          <div class="text-2xl font-bold text-ink" id="statThisWeek">0</div>
-          <div class="text-xs text-inkdim mt-1 font-sans">Analyzed This Week</div>
-        </div>
-        <div class="stat-card">
-          <div class="text-2xl font-bold text-ink" id="statDuplicateRate">0%</div>
-          <div class="text-xs text-inkdim mt-1 font-sans">Duplicate Incident Rate</div>
-        </div>
-        <div class="stat-card">
-          <div class="text-2xl font-bold text-ink" id="statSuccessRate">—</div>
-          <div class="text-xs text-inkdim mt-1 font-sans">Historical Fix Success</div>
-        </div>
-      </div>
-
-      <div id="severityChartCard" class="stat-card mb-6 hidden">
-        <div class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-3">Severity Breakdown</div>
-        <div style="max-width: 320px; height: 180px;">
-          <canvas id="severityChart"></canvas>
-        </div>
-      </div>
-
-      <div id="dashboardListSection">
-        <div class="bg-panel rounded-xl border border-line p-4 mb-4">
-          <div class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-3">Filters</div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-            <input id="filterSearchInput" type="text" placeholder="Search logs/analysis"
-              class="bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm" />
-            <select id="filterEnvironmentSelect"
-              class="bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm">
-              <option value="">All Environments</option>
-              <option>General</option>
-              <option>Docker</option>
-              <option>Python</option>
-              <option>Kubernetes</option>
-              <option>AWS</option>
-              <option>Node.js</option>
-              <option>Database</option>
-            </select>
-            <select id="filterSeveritySelect"
-              class="bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm">
-              <option value="">All Severities</option>
-              <option>Sev1</option>
-              <option>Sev2</option>
-              <option>Sev3</option>
-              <option>Sev4</option>
-              <option>Unknown</option>
-            </select>
-            <select id="filterStatusSelect"
-              class="bg-panel2 border border-line text-ink rounded-lg px-3 py-2 text-sm">
-              <option value="">All Statuses</option>
-              <option>Open</option>
-              <option>Investigating</option>
-              <option>Resolved</option>
-            </select>
-            <label class="flex items-center gap-2 text-xs text-inkdim font-sans px-1">
-              <input id="filterDuplicateOnly" type="checkbox" class="accent-orange-500" />
-              Duplicate only
-            </label>
-          </div>
-          <div class="flex items-center gap-2 mt-3">
-            <button id="applyFiltersBtn" type="button"
-              class="text-xs bg-signal hover:bg-orange-500 text-graphite px-3 py-1.5 rounded-md font-semibold">
-              Apply Filters
-            </button>
-            <button id="clearFiltersBtn" type="button"
-              class="text-xs bg-panel2 hover:bg-line text-ink px-3 py-1.5 rounded-md font-medium border border-line">
-              Clear
-            </button>
-          </div>
-        </div>
-
-        <h2 class="text-sm font-semibold text-inkdim uppercase tracking-wide mb-3">Incident History</h2>
-        <div id="dashboardEmptyState" class="hidden text-center text-inkfaint text-sm py-12 bg-panel rounded-xl border border-line font-sans">
-          No incidents analyzed yet. Run your first analysis to see it here.
-        </div>
-        <div id="dashboardLoadingState" class="hidden text-center text-inkfaint text-sm py-12 font-sans">
-          Loading your incident history…
-        </div>
-        <div id="dashboardIncidentList" class="space-y-2"></div>
-      </div>
-
-      <!-- Detail view for a clicked-into incident. Reuses the SAME
-           rendering functions (renderMarkdownInto, renderStructuredSections)
-           as the live analyzer, just pointed at these separate containers -
-           so a mermaid diagram or git diff renders identically whether it's
-           fresh off the stream or pulled back out of history. -->
-      <div id="dashboardDetailSection" class="hidden mt-6">
-        <button id="backToListBtn" type="button" class="text-xs text-info hover:text-sky-300 font-medium mb-3">
-          ← Back to list
-        </button>
-        <div class="bg-panel rounded-xl border border-line p-4 sm:p-6">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-sm font-semibold text-inkdim uppercase tracking-wide">Incident Detail</h2>
-            <div class="flex items-center gap-2">
-              <span id="dashboardDetailMeta" class="text-xs text-inkfaint"></span>
-              <select id="dashboardStatusSelect" class="status-select">
-                <option value="Open">Open</option>
-                <option value="Investigating">Investigating</option>
-                <option value="Resolved">Resolved</option>
-              </select>
+    <!-- Auth Modal -->
+    <div id="authPanel" class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex items-center justify-center">
+        <div class="bg-slate-800 p-8 rounded-2xl border border-slate-700 w-full max-w-md shadow-2xl">
+            <div class="text-center mb-8 flex flex-col items-center">
+                <div class="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center border border-slate-700 shadow-inner mb-4">
+                    <i class="ph-fill ph-wrench text-3xl text-primary"></i>
+                </div>
+                <h1 class="text-3xl font-bold text-white mb-2 tracking-tight">Patch<span class="text-primary">Ops</span></h1>
+                <p class="text-slate-400 text-sm">Enterprise Incident Resolution Hub</p>
             </div>
-          </div>
-          <div id="dashboardDedupInfo" class="text-xs text-inkdim mb-2 font-sans"></div>
-          <div id="dashboardOutcomeSummary" class="text-xs text-inkdim mb-3 font-sans"></div>
-          <div class="bg-panel2 border border-line rounded-lg p-3 mb-4">
-            <div class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-2">Remediation Outcome</div>
-            <div class="flex flex-wrap gap-2 mb-2">
-              <button id="outcomeWorkedBtn" type="button"
-                class="text-xs bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 px-3 py-1.5 rounded-md font-medium border border-emerald-500/40">
-                Worked
-              </button>
-              <button id="outcomePartialBtn" type="button"
-                class="text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 px-3 py-1.5 rounded-md font-medium border border-amber-500/40">
-                Partial
-              </button>
-              <button id="outcomeFailedBtn" type="button"
-                class="text-xs bg-red-500/20 hover:bg-red-500/30 text-red-200 px-3 py-1.5 rounded-md font-medium border border-red-500/40">
-                Failed
-              </button>
+            
+            <div class="space-y-5">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Username</label>
+                    <div class="relative">
+                        <i class="ph ph-user absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                        <input type="text" id="authUsername" class="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 pl-10 pr-4 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all" placeholder="sre_admin">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Password</label>
+                    <div class="relative">
+                        <i class="ph ph-lock-key absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-lg"></i>
+                        <input type="password" id="authPassword" class="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 pl-10 pr-4 text-white placeholder-slate-600 focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all" placeholder="••••••••">
+                    </div>
+                </div>
+                
+                <div id="authError" class="hidden bg-red-900/30 border border-red-800/50 text-red-400 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
+                    <i class="ph-fill ph-warning-circle text-lg"></i>
+                    <span id="authErrorText"></span>
+                </div>
+
+                <div class="flex gap-4 pt-2">
+                    <button onclick="handleAuth('login')" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 px-4 rounded-xl transition-colors">Login</button>
+                    <button onclick="handleAuth('register')" class="flex-1 bg-primary hover:bg-orange-600 text-white font-semibold py-3 px-4 rounded-xl transition-all shadow-lg shadow-orange-500/20">Register</button>
+                </div>
             </div>
-            <input id="outcomeNoteInput" type="text" placeholder="Optional note about the remediation result"
-              class="w-full bg-panel border border-line text-ink rounded-lg px-3 py-2 text-xs" />
-            <div id="outcomeStatus" class="hidden mt-2 px-2 py-1 rounded text-xs font-medium"></div>
-          </div>
-          <div id="dashboardResultBox" class="prose prose-invert prose-sm max-w-none font-sans"></div>
-          <div id="dashboardDiagramSection" class="hidden mt-4">
-            <h3 class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-2">Architecture Impact</h3>
-            <div id="dashboardMermaidContainer" class="mermaid-container"></div>
-          </div>
-          <div id="dashboardDiffSection" class="hidden mt-4">
-            <h3 class="text-xs font-semibold text-inkdim uppercase tracking-wide mb-2">Git Patch</h3>
-            <div id="dashboardDiffContainer"></div>
-          </div>
         </div>
-      </div>
-    </div><!-- /#dashboardView -->
+    </div>
 
-  </div>
-  </div><!-- /#appContent -->
+    <!-- Main App Container -->
+    <div id="appPanel" class="hidden flex-1 flex flex-col">
+        <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 sticky top-0 z-40 shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex items-center justify-between h-16">
+                    <div class="flex items-center gap-10">
+                        <div class="flex items-center gap-2">
+                            <i class="ph-fill ph-wrench text-2xl text-primary"></i>
+                            <h1 class="text-xl font-bold text-white tracking-tight">Patch<span class="text-primary">Ops</span></h1>
+                        </div>
+                        
+                        <nav class="hidden md:flex gap-2" id="navTabs">
+                            <button onclick="switchTab('analysis')" class="tab-btn active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all bg-slate-800 text-primary border border-slate-700">
+                                <i class="ph ph-magnifying-glass text-lg"></i> New Analysis
+                            </button>
+                            <button onclick="switchTab('dashboard')" class="tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
+                                <i class="ph ph-chart-bar text-lg"></i> Dashboard
+                            </button>
+                            <button onclick="switchTab('settings')" class="tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent">
+                                <i class="ph ph-gear text-lg"></i> Settings
+                            </button>
+                        </nav>
+                    </div>
+                    
+                    <div class="flex items-center gap-4">
+                        <div class="hidden sm:flex items-center gap-2 bg-slate-800 py-1.5 px-3 rounded-full border border-slate-700">
+                            <i class="ph-fill ph-user-circle text-slate-400 text-lg"></i>
+                            <span id="currentUserLabel" class="text-xs font-semibold text-slate-300"></span>
+                        </div>
+                        <button onclick="logout()" class="text-sm font-medium text-slate-400 hover:text-white transition-colors flex items-center gap-1">
+                            <i class="ph ph-sign-out text-lg"></i> Logout
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
 
+        <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
-<script>
-  const errorLogInput     = document.getElementById('errorLogInput');
-  const sourceCodeInput   = document.getElementById('sourceCodeInput');
-  const environmentSelect = document.getElementById('environmentSelect');
-  const analyzeBtn        = document.getElementById('analyzeBtn');
-  const charCount         = document.getElementById('charCount');
-  const statusBox         = document.getElementById('statusBox');
-  const resultCard        = document.getElementById('resultCard');
-  const resultBox         = document.getElementById('resultBox');
-  const copyBtn           = document.getElementById('copyBtn');
-  const postmortemBtn     = document.getElementById('postmortemBtn');
-  const postmortemFormatButtons = document.getElementById('postmortemFormatButtons');
-  const downloadMdBtn     = document.getElementById('downloadMdBtn');
-  const downloadPdfBtn    = document.getElementById('downloadPdfBtn');
-  const postmortemPrintFrame = document.getElementById('postmortemPrintFrame');
-  const postmortemStatus  = document.getElementById('postmortemStatus');
-  const diagramSection    = document.getElementById('diagramSection');
-  const mermaidContainer  = document.getElementById('mermaidContainer');
-  const diffSection       = document.getElementById('diffSection');
-  const diffContainer     = document.getElementById('diffContainer');
-  const similarIncidentsSection   = document.getElementById('similarIncidentsSection');
-  const similarIncidentsContainer = document.getElementById('similarIncidentsContainer');
-  const addLogSourceBtn   = document.getElementById('addLogSourceBtn');
-  const logSourcesContainer = document.getElementById('logSourcesContainer');
+            <!-- ANALYSIS VIEW -->
+            <div id="view-analysis" class="space-y-8 animate-fade-in">
+                <div class="glass-card rounded-2xl overflow-hidden shadow-2xl">
+                    <div class="p-6 space-y-6">
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div>
+                                <label class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-2">
+                                    <i class="ph ph-terminal-window text-primary"></i> Raw Error Log <span class="text-red-400">*</span>
+                                </label>
+                                <textarea id="errorLogInput" rows="6" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-300 font-mono text-xs focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors resize-y leading-relaxed" placeholder="Paste stack trace, system log, or exception here..."></textarea>
+                            </div>
+                            <div>
+                                <label class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-2">
+                                    <i class="ph ph-code"></i> Source Code Snippet (Optional)
+                                </label>
+                                <textarea id="sourceCodeInput" rows="6" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-300 font-mono text-xs focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors resize-y leading-relaxed" placeholder="Paste relevant file content to generate accurate Git Diff patch..."></textarea>
+                            </div>
+                        </div>
+                        
+                        <div class="flex flex-col sm:flex-row items-end gap-4 bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+                            <div class="flex-1 w-full">
+                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Target Environment</label>
+                                <div class="relative">
+                                    <select id="envInput" class="w-full bg-slate-800 border border-slate-700 rounded-lg py-2.5 pl-4 pr-10 text-sm font-medium text-slate-200 appearance-none focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors">
+                                        <option value="General">General / Agnostic</option>
+                                        <option value="Python">Python</option>
+                                        <option value="Kubernetes">Kubernetes</option>
+                                        <option value="Docker">Docker</option>
+                                        <option value="AWS">AWS Serverless</option>
+                                        <option value="Node.js">Node.js</option>
+                                    </select>
+                                    <i class="ph ph-caret-down absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
+                                </div>
+                            </div>
+                            <button id="analyzeBtn" onclick="analyzeIncident()" class="w-full sm:w-auto bg-primary hover:bg-orange-600 text-white font-semibold py-2.5 px-8 rounded-lg transition-all shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2 h-[42px]">
+                                <i class="ph-bold ph-lightning"></i> <span>Analyze Incident</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
-  // --- Auth screen elements ---
-  const authScreen        = document.getElementById('authScreen');
-  const appContent        = document.getElementById('appContent');
-  const loginTab          = document.getElementById('loginTab');
-  const registerTab       = document.getElementById('registerTab');
-  const authForm          = document.getElementById('authForm');
-  const authUsername      = document.getElementById('authUsername');
-  const authEmailField    = document.getElementById('authEmailField');
-  const authEmail         = document.getElementById('authEmail');
-  const authPassword      = document.getElementById('authPassword');
-  const authPasswordHint  = document.getElementById('authPasswordHint');
-  const authSubmitBtn     = document.getElementById('authSubmitBtn');
-  const authStatus        = document.getElementById('authStatus');
-  const currentUsernameLabel = document.getElementById('currentUsernameLabel');
-  const logoutBtn         = document.getElementById('logoutBtn');
+                <div id="apiError" class="hidden bg-red-900/20 border border-red-800/50 text-red-400 px-6 py-4 rounded-xl text-sm shadow-lg flex items-start gap-3">
+                    <i class="ph-fill ph-warning-circle text-xl mt-0.5"></i>
+                    <div id="apiErrorText" class="leading-relaxed"></div>
+                </div>
 
-  // --- Dashboard elements ---
-  const analyzerTabBtn    = document.getElementById('analyzerTabBtn');
-  const dashboardTabBtn   = document.getElementById('dashboardTabBtn');
-  const analyzerView      = document.getElementById('analyzerView');
-  const dashboardView     = document.getElementById('dashboardView');
-  const statTotalIncidents = document.getElementById('statTotalIncidents');
-  const statTopEnvironment = document.getElementById('statTopEnvironment');
-  const statThisWeek      = document.getElementById('statThisWeek');
-  const statDuplicateRate = document.getElementById('statDuplicateRate');
-  const statSuccessRate   = document.getElementById('statSuccessRate');
-  const dashboardListSection = document.getElementById('dashboardListSection');
-  const dashboardEmptyState = document.getElementById('dashboardEmptyState');
-  const dashboardLoadingState = document.getElementById('dashboardLoadingState');
-  const dashboardIncidentList = document.getElementById('dashboardIncidentList');
-  const filterSearchInput = document.getElementById('filterSearchInput');
-  const filterEnvironmentSelect = document.getElementById('filterEnvironmentSelect');
-  const filterSeveritySelect = document.getElementById('filterSeveritySelect');
-  const filterStatusSelect = document.getElementById('filterStatusSelect');
-  const filterDuplicateOnly = document.getElementById('filterDuplicateOnly');
-  const applyFiltersBtn = document.getElementById('applyFiltersBtn');
-  const clearFiltersBtn = document.getElementById('clearFiltersBtn');
-  const dashboardDetailSection = document.getElementById('dashboardDetailSection');
-  const backToListBtn     = document.getElementById('backToListBtn');
-  const dashboardResultBox = document.getElementById('dashboardResultBox');
-  const dashboardDetailMeta = document.getElementById('dashboardDetailMeta');
-  const dashboardDedupInfo = document.getElementById('dashboardDedupInfo');
-  const dashboardOutcomeSummary = document.getElementById('dashboardOutcomeSummary');
-  const dashboardDiagramSection = document.getElementById('dashboardDiagramSection');
-  const dashboardMermaidContainer = document.getElementById('dashboardMermaidContainer');
-  const dashboardDiffSection = document.getElementById('dashboardDiffSection');
-  const dashboardDiffContainer = document.getElementById('dashboardDiffContainer');
-  const severityChartCard = document.getElementById('severityChartCard');
-  const severityChartCanvas = document.getElementById('severityChart');
-  const dashboardStatusSelect = document.getElementById('dashboardStatusSelect');
-  const outcomeWorkedBtn = document.getElementById('outcomeWorkedBtn');
-  const outcomePartialBtn = document.getElementById('outcomePartialBtn');
-  const outcomeFailedBtn = document.getElementById('outcomeFailedBtn');
-  const outcomeNoteInput = document.getElementById('outcomeNoteInput');
-  const outcomeStatus = document.getElementById('outcomeStatus');
-  const statusClock       = document.getElementById('statusClock');
+                <div id="outputContainer" class="hidden space-y-6">
+                    <div class="glass-card rounded-2xl overflow-hidden shadow-xl">
+                        <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
+                            <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                                <i class="ph-fill ph-bug-droid text-primary text-lg"></i> 1. Root Cause Analysis
+                            </h2>
+                        </div>
+                        <div id="rcaOutput" class="p-6 markdown-body text-slate-300 text-sm leading-relaxed bg-slate-900/30"></div>
+                    </div>
 
-  const API_BASE = ''; // same-origin
+                    <div id="archContainer" class="hidden glass-card rounded-2xl overflow-hidden shadow-xl">
+                        <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-3">
+                            <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                                <i class="ph-fill ph-graph text-primary text-lg"></i> 2. Architecture Impact
+                            </h2>
+                        </div>
+                        <div class="p-6 overflow-x-auto flex justify-center bg-slate-900">
+                            <div id="mermaidOutput" class="py-4"></div>
+                        </div>
+                    </div>
 
-  // 'login' or 'register' - tracks which auth form mode is active so the
-  // shared form (username/[email]/password) can submit to the right
-  // endpoint, show the right fields, and show the right button label.
-  let authMode = 'login';
+                    <div id="patchContainer" class="hidden glass-card rounded-2xl overflow-hidden shadow-xl">
+                        <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
+                            <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                                <i class="ph-fill ph-git-diff text-primary text-lg"></i> 3. Remediation / Git Patch
+                            </h2>
+                        </div>
+                        <div class="p-4 bg-slate-950">
+                            <div id="diffOutput"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-  // Holds the full accumulated analysis markdown once streaming finishes -
-  // sent to /api/postmortem and scanned for ```mermaid / ```diff blocks.
-  let fullAnalysisText = '';
+            <!-- DASHBOARD VIEW -->
+            <div id="view-dashboard" class="hidden space-y-6 animate-fade-in">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden">
+                        <div class="absolute top-0 right-0 p-4 opacity-10"><i class="ph-fill ph-warning-octagon text-6xl text-white"></i></div>
+                        <span class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1 z-10">Total Incidents</span>
+                        <span id="dashTotal" class="text-4xl font-black text-white z-10">0</span>
+                    </div>
+                    
+                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden">
+                        <div class="absolute top-0 right-0 p-4 opacity-10"><i class="ph-fill ph-globe-hemisphere-west text-6xl text-primary"></i></div>
+                        <span class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1 z-10">Top Environment</span>
+                        <span id="dashEnv" class="text-4xl font-black text-primary z-10 truncate">-</span>
+                    </div>
+                    
+                    <div class="glass-card p-6 rounded-2xl shadow-lg flex flex-col relative overflow-hidden">
+                        <div class="absolute top-0 right-0 p-4 opacity-10"><i class="ph-fill ph-calendar-blank text-6xl text-white"></i></div>
+                        <span class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1 z-10">This Week</span>
+                        <span id="dashWeek" class="text-4xl font-black text-white z-10">0</span>
+                    </div>
 
-  // Holds the generated post-mortem markdown once /api/postmortem
-  // responds, so both the Markdown and PDF download buttons can reuse it
-  // without re-calling the LLM for each format.
-  let postmortemMarkdown = '';
+                    <div class="glass-card p-5 rounded-2xl shadow-lg flex flex-col justify-between border-slate-700/80 bg-slate-800/40">
+                        <div class="flex items-center gap-2 mb-3">
+                            <i class="ph-fill ph-faders text-primary text-lg"></i>
+                            <span class="text-slate-200 text-xs font-bold uppercase tracking-widest">Refine Data</span>
+                        </div>
+                        <div class="space-y-3">
+                            <div class="relative">
+                                <select id="filterSeverity" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 appearance-none outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all">
+                                    <option value="">All Severities</option>
+                                    <option value="Sev1">Sev1 (Critical)</option>
+                                    <option value="Sev2">Sev2 (High)</option>
+                                    <option value="Sev3">Sev3 (Medium)</option>
+                                    <option value="Sev4">Sev4 (Low)</option>
+                                </select>
+                                <i class="ph ph-caret-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"></i>
+                            </div>
+                            <button onclick="loadDashboard()" class="w-full bg-primary hover:bg-orange-600 text-white py-2 rounded-lg text-sm font-semibold transition-all shadow-md shadow-orange-500/20">
+                                Apply Filters
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
-  // Incrementing counter used only to give each dynamically-added log
-  // source card a unique DOM id - not sent to the backend.
-  let logSourceCounter = 0;
+                <div class="glass-card rounded-2xl shadow-xl overflow-hidden">
+                    <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-4 flex items-center justify-between">
+                        <h2 class="text-sm font-bold text-white uppercase tracking-widest flex items-center gap-2">
+                            <i class="ph-bold ph-list-dashes text-primary text-lg"></i> Incident History
+                        </h2>
+                    </div>
+                    
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-slate-900/80 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-700">
+                                    <th class="px-6 py-4 font-semibold w-24">ID</th>
+                                    <th class="px-6 py-4 font-semibold w-32">Date</th>
+                                    <th class="px-6 py-4 font-semibold w-32">Environment</th>
+                                    <th class="px-6 py-4 font-semibold w-32">Severity</th>
+                                    <th class="px-6 py-4 font-semibold">Error Log Preview</th>
+                                </tr>
+                            </thead>
+                            <tbody id="incidentTableBody" class="text-sm divide-y divide-slate-700/50 bg-slate-900/30">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
 
-  // Chart.js instance for the dashboard's severity breakdown chart. Must
-  // be destroyed before creating a new one on the same <canvas>, or
-  // Chart.js throws "Canvas is already in use" on the second dashboard
-  // load - tracked here so loadDashboard() can safely call this every
-  // time without accumulating orphaned chart instances.
-  let severityChartInstance = null;
+            <!-- SETTINGS VIEW -->
+            <div id="view-settings" class="hidden max-w-5xl mx-auto space-y-6 animate-fade-in">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold text-white mb-2 tracking-tight">Integrations & Automation</h2>
+                    <p class="text-slate-400 text-sm">Configure outbound webhooks, ticketing systems, and code repository scaffolding.</p>
+                </div>
 
-  // Tracks which incident id the status dropdown in the detail view is
-  // currently bound to, so its one 'change' listener (attached once,
-  // not re-attached per incident) always updates the right record.
-  let currentDetailIncidentId = null;
-  let latestAnalytics = null;
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Slack Card -->
+                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-[#E01E5A]">
+                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-3">
+                            <i class="ph-fill ph-slack-logo text-[#E01E5A] text-2xl"></i> Slack Configuration
+                        </h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Webhook URL</label>
+                                <input type="text" id="set-slack-webhook" placeholder="https://hooks.slack.com/services/..." class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Bot Token</label>
+                                    <input type="password" id="set-slack-token" placeholder="(Unchanged)" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Channel ID</label>
+                                    <input type="text" id="set-slack-channel" placeholder="C1234567" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
-  mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+                    <!-- Jira Card -->
+                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-[#0052CC]">
+                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-3">
+                            <i class="ph-fill ph-jira-logo text-[#0052CC] text-2xl"></i> Jira Cloud
+                        </h3>
+                        <div class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Base URL</label>
+                                    <input type="text" id="set-jira-url" placeholder="https://domain.atlassian.net" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Project Key</label>
+                                    <input type="text" id="set-jira-key" placeholder="ENG" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Email</label>
+                                    <input type="email" id="set-jira-email" placeholder="user@domain.com" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">API Token</label>
+                                    <input type="password" id="set-jira-token" placeholder="(Unchanged)" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
-  // -------------------------------------------------------------------
-  // Live status bar clock - purely cosmetic, ticks every second to keep
-  // the "NOC monitoring strip" feeling live rather than static chrome.
-  // -------------------------------------------------------------------
-  function tickStatusClock() {
-    const now = new Date();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mm = String(now.getMinutes()).padStart(2, '0');
-    const ss = String(now.getSeconds()).padStart(2, '0');
-    statusClock.textContent = `${hh}:${mm}:${ss}`;
-  }
-  tickStatusClock();
-  setInterval(tickStatusClock, 1000);
+                    <!-- GitHub Card -->
+                    <div class="glass-card rounded-2xl p-6 shadow-xl border-t-4 border-t-white md:col-span-2 lg:col-span-1">
+                        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-3">
+                            <i class="ph-fill ph-github-logo text-white text-2xl"></i> GitHub PR Scaffolding
+                        </h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Repository</label>
+                                <input type="text" id="set-gh-repo" placeholder="owner/repo" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Personal Access Token</label>
+                                <input type="password" id="set-gh-token" placeholder="(Unchanged)" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-200 focus:border-primary outline-none transition-all">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Save Actions -->
+                    <div class="md:col-span-2 lg:col-span-1 flex flex-col justify-end">
+                         <div id="settingsMsg" class="hidden text-center text-sm font-semibold py-3 px-4 rounded-xl mb-4 transition-all"></div>
+                         <button onclick="saveSettings()" class="w-full bg-primary hover:bg-orange-600 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-orange-500/20 text-lg flex items-center justify-center gap-2">
+                             <i class="ph-bold ph-floppy-disk"></i> Save Configuration
+                         </button>
+                    </div>
+                </div>
+            </div>
 
-  // -------------------------------------------------------------------
-  // Auth: token storage, authenticated fetch wrapper, login/register UI
-  // -------------------------------------------------------------------
-  // Token lives in localStorage so a page refresh doesn't force a
-  // re-login - acceptable for a portfolio-scale tool. (Worth knowing for
-  // a production app: localStorage is readable by any script that runs
-  // on the page, so an XSS bug elsewhere could steal the token; an
-  // httpOnly cookie is the safer default there. Not worth the added
-  // backend complexity - CSRF handling, cookie flags - at this scale.)
-  const TOKEN_KEY = 'sre_copilot_token';
-  const USERNAME_KEY = 'sre_copilot_username';
+        </main>
+    </div>
 
-  function getToken() {
-    return localStorage.getItem(TOKEN_KEY);
-  }
-  function setSession(token, username) {
-    localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(USERNAME_KEY, username);
-  }
-  function clearSession() {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USERNAME_KEY);
-  }
+    <!-- Frontend Application Logic -->
+    <script>
+        let currentToken = localStorage.getItem('patchops_token');
+        let currentUsername = localStorage.getItem('patchops_user');
+        const API_URL = "http://localhost:8000";
 
-  function showApp(username) {
-    authScreen.classList.add('hidden');
-    appContent.classList.remove('hidden');
-    currentUsernameLabel.textContent = `👤 ${username}`;
-  }
-  function showAuthScreen() {
-    appContent.classList.add('hidden');
-    authScreen.classList.remove('hidden');
-  }
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (currentToken) headers['Authorization'] = `Bearer ${currentToken}`;
+            
+            const options = { method, headers };
+            if (body) options.body = JSON.stringify(body);
 
-  // Thin wrapper around fetch() that attaches the Bearer token to every
-  // call automatically, and treats a 401 as "session is no longer valid"
-  // globally - clearing local state and dropping the user back to the
-  // login screen rather than letting each caller reinvent that handling.
-  async function authFetch(url, options = {}) {
-    const token = getToken();
-    const headers = {
-      ...(options.headers || {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-    const response = await fetch(url, { ...options, headers });
-    if (response.status === 401) {
-      clearSession();
-      showAuthScreen();
-      showStatus(authStatus, 'Your session expired. Please log in again.');
-    }
-    return response;
-  }
-
-  // On page load: if a token is already stored, verify it's still valid
-  // by calling /api/me rather than trusting it blindly - an expired or
-  // tampered token should send the user back to login, not into a broken
-  // app that 401s on the first real action.
-  async function checkAuthOnLoad() {
-    const token = getToken();
-    if (!token) {
-      showAuthScreen();
-      return;
-    }
-    try {
-      const resp = await fetch(`${API_BASE}/api/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        showApp(data.username);
-      } else {
-        clearSession();
-        showAuthScreen();
-      }
-    } catch (err) {
-      console.error('Auth check failed:', err);
-      // Network error, not an auth failure - keep the token and let the
-      // user retry rather than forcing a re-login for a connectivity blip.
-      showAuthScreen();
-    }
-  }
-
-  function setAuthMode(mode) {
-    authMode = mode;
-    hideStatus(authStatus);
-    if (mode === 'login') {
-      loginTab.classList.add('active');
-      registerTab.classList.remove('active');
-      authSubmitBtn.textContent = 'Log In';
-      authPasswordHint.classList.add('hidden');
-      authPassword.setAttribute('autocomplete', 'current-password');
-      authEmailField.classList.add('hidden');
-      authEmail.required = false;
-    } else {
-      registerTab.classList.add('active');
-      loginTab.classList.remove('active');
-      authSubmitBtn.textContent = 'Create Account';
-      authPasswordHint.classList.remove('hidden');
-      authPassword.setAttribute('autocomplete', 'new-password');
-      // Registration collects username and email as two distinct
-      // fields - the username is the handle used to log in and shown
-      // in the app; the email is a separate contact address, never
-      // silently substituted for one another.
-      authEmailField.classList.remove('hidden');
-      authEmail.required = true;
-    }
-  }
-
-  loginTab.addEventListener('click', () => setAuthMode('login'));
-  registerTab.addEventListener('click', () => setAuthMode('register'));
-
-  authForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const username = authUsername.value.trim();
-    const email = authEmail.value.trim();
-    const password = authPassword.value;
-
-    if (!username || !password) {
-      showStatus(authStatus, 'Username and password are required.');
-      return;
-    }
-    if (authMode === 'register' && !email) {
-      showStatus(authStatus, 'Email is required to register.');
-      return;
-    }
-
-    authSubmitBtn.disabled = true;
-    authSubmitBtn.textContent = authMode === 'login' ? 'Logging in…' : 'Creating account…';
-    hideStatus(authStatus);
-
-    const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
-    const body = authMode === 'login'
-      ? { username, password }
-      : { username, email, password };
-
-    try {
-      const resp = await fetch(`${API_BASE}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json().catch(() => ({}));
-
-      if (!resp.ok) {
-        showStatus(authStatus, data.detail || 'Something went wrong. Please try again.');
-        return;
-      }
-
-      setSession(data.access_token, data.username);
-      authForm.reset();
-      showApp(data.username);
-    } catch (err) {
-      console.error(err);
-      showStatus(authStatus, 'Could not reach the server. Please check your connection.');
-    } finally {
-      authSubmitBtn.disabled = false;
-      setAuthMode(authMode); // resets button label back from the loading state
-    }
-  });
-
-  logoutBtn.addEventListener('click', () => {
-    clearSession();
-    showAuthScreen();
-  });
-
-  checkAuthOnLoad();
-
-  // -------------------------------------------------------------------
-  // Multi-log correlation: dynamic "add another log source" UI
-  // -------------------------------------------------------------------
-  function addLogSourceCard() {
-    logSourceCounter += 1;
-    const cardId = `logSource-${logSourceCounter}`;
-
-    const card = document.createElement('div');
-    card.className = 'log-source-card';
-    card.id = cardId;
-    card.innerHTML = `
-      <div class="flex items-center justify-between gap-2 mb-2">
-        <input type="text" placeholder="Service name (e.g. Payment Gateway, Database, API Gateway)"
-          class="log-source-label flex-1 bg-panel2 border border-line text-ink rounded-lg px-3 py-1.5 text-sm" />
-        <button type="button" class="remove-log-source-btn text-xs text-signal hover:text-orange-400 font-medium whitespace-nowrap px-2">
-          Remove
-        </button>
-      </div>
-      <textarea placeholder="Paste this service's log here..." rows="5"
-        class="log-source-content w-full bg-panel2 border border-line text-ink rounded-lg p-3 font-mono text-sm resize-y"></textarea>
-    `;
-
-    card.querySelector('.remove-log-source-btn').addEventListener('click', () => {
-      card.remove();
-      updateCharCount();
-    });
-    card.querySelector('.log-source-content').addEventListener('input', updateCharCount);
-
-    logSourcesContainer.appendChild(card);
-  }
-
-  // Reads all currently-present log source cards into the array shape
-  // the backend's LogSource schema expects: { label, content }.
-  // Cards with empty content are skipped - a user might add a card,
-  // change their mind, and leave it blank rather than removing it.
-  function collectAdditionalLogs() {
-    const cards = logSourcesContainer.querySelectorAll('.log-source-card');
-    const logs = [];
-    cards.forEach((card, index) => {
-      const labelInput = card.querySelector('.log-source-label');
-      const contentInput = card.querySelector('.log-source-content');
-      const content = contentInput.value.trim();
-      if (!content) return; // skip empty cards silently
-      const label = labelInput.value.trim() || `Log Source ${index + 1}`;
-      logs.push({ label, content });
-    });
-    return logs;
-  }
-
-  function clearLogSourceCards() {
-    logSourcesContainer.innerHTML = '';
-  }
-
-  addLogSourceBtn.addEventListener('click', addLogSourceCard);
-
-  function updateCharCount() {
-    const additionalChars = Array.from(logSourcesContainer.querySelectorAll('.log-source-content'))
-      .reduce((sum, el) => sum + el.value.length, 0);
-    const total = errorLogInput.value.length + sourceCodeInput.value.length + additionalChars;
-    charCount.textContent = `${total.toLocaleString()} characters total`;
-    charCount.classList.toggle('text-signal', total > 80000);
-  }
-  errorLogInput.addEventListener('input', updateCharCount);
-  sourceCodeInput.addEventListener('input', updateCharCount);
-
-  function showStatus(el, message, type = 'error') {
-    const styles = {
-      error: 'bg-red-500/10 text-red-300 border border-red-500/30',
-      info:  'bg-sky-500/10 text-sky-300 border border-sky-500/30',
-      success: 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30',
-    };
-    el.className = `mb-4 px-4 py-3 rounded-lg text-sm font-medium font-sans ${styles[type]}`;
-    el.textContent = message;
-    el.classList.remove('hidden');
-  }
-  function hideStatus(el) {
-    el.classList.add('hidden');
-  }
-
-  function setLoading(isLoading) {
-    analyzeBtn.disabled = isLoading;
-    analyzeBtn.textContent = isLoading ? 'Analyzing…' : 'Analyze Incident';
-  }
-
-  function showOutcomeStatus(message, type = 'info') {
-    const styles = {
-      error: 'bg-red-500/10 text-red-300 border border-red-500/30',
-      info:  'bg-sky-500/10 text-sky-300 border border-sky-500/30',
-      success: 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30',
-    };
-    outcomeStatus.className = `mt-2 px-2 py-1 rounded text-xs font-medium ${styles[type]}`;
-    outcomeStatus.textContent = message;
-    outcomeStatus.classList.remove('hidden');
-  }
-
-  // Extracts the FIRST fenced code block of a given language tag (e.g.
-  // "mermaid" or "diff") from accumulated markdown. Only called after
-  // streaming completes, since a partial fence mid-stream isn't valid yet.
-  function extractFencedBlock(markdown, lang) {
-    const pattern = new RegExp('```' + lang + '\\n([\\s\\S]*?)```', 'i');
-    const match = markdown.match(pattern);
-    return match ? match[1].trim() : null;
-  }
-
-  function sanitizeMermaidCode(code) {
-    return code
-      .replace(/[\u2018\u2019]/g, "'")   // curly single quotes -> straight
-      .replace(/[\u201C\u201D]/g, '"')   // curly double quotes -> straight
-      .replace(/[\u2013\u2014]/g, '-')   // en/em dash -> hyphen
-      .replace(/`/g, '')                 // stray backticks that leaked in
-      .trim();
-  }
-
-  // Converts our confidence-tagging markers into styled badge spans
-  // BEFORE handing the markdown to marked.parse(). marked passes inline
-  // HTML through untouched by default, so this survives into the final
-  // rendered output. We do this on every render pass (including
-  // mid-stream) so the badges appear progressively as text streams in,
-  // not just after the `done` event.
-  function applyConfidenceBadges(markdown) {
-    return markdown
-      .replace(/\[HIGH-CONFIDENCE\]/g, '<span class="confidence-high">HIGH CONFIDENCE</span>')
-      .replace(/\[INFERRED\]/g, '<span class="confidence-inferred">INFERRED</span>')
-      .replace(/\[SEVERITY:\s*Sev([1-4])\]/gi, (match, level) => {
-        return `<span class="severity-badge severity-sev${level}">SEVERITY: SEV${level}</span>`;
-      });
-  }
-
-  // Single-shot markdown render (no streaming/typing-cursor concerns) -
-  // used by the dashboard detail view, where the full analysis_text is
-  // already available in one piece rather than arriving chunk by chunk.
-  function renderMarkdownInto(el, markdown) {
-    el.innerHTML = marked.parse(applyConfidenceBadges(markdown));
-  }
-
-  // Renders the "Similar Past Incidents" panel from the SSE
-  // `similar_incidents` payload. Hides the section entirely if there
-  // are no matches above the backend's similarity threshold, rather
-  // than showing an empty panel.
-  function renderSimilarIncidents(matches) {
-    if (!matches || matches.length === 0) {
-      similarIncidentsSection.classList.add('hidden');
-      return;
-    }
-
-    similarIncidentsContainer.innerHTML = matches.map(m => {
-      const preview = m.error_log_preview
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-      return `
-        <div class="similar-incident-card">
-          <span class="similar-incident-score">${Math.round(m.similarity * 100)}% match</span>
-          ${typeof m.historical_success_rate === 'number'
-            ? `<span class="text-xs text-emerald-300 font-medium">fix success ${Math.round(m.historical_success_rate * 100)}% (n=${m.outcome_samples || 0})</span>`
-            : `<span class="text-xs text-inkfaint font-medium">no outcome history yet</span>`}
-          <span class="text-inkdim">${m.environment} · ${m.created_at}</span>
-          <div class="text-xs text-inkfaint mt-1">rank score ${typeof m.ranking_score === 'number' ? m.ranking_score.toFixed(3) : '—'}</div>
-          <div class="mt-1 font-mono text-inkdim">${preview}${m.error_log_preview.length >= 200 ? '…' : ''}</div>
-        </div>
-      `;
-    }).join('');
-
-    similarIncidentsSection.classList.remove('hidden');
-  }
-
-  // Renders the mermaid diagram and git diff sections once the full
-  // analysis text has arrived. We wait for `done` rather than rendering
-  // incrementally - an unclosed fence mid-stream would crash both libs.
-  async function renderStructuredSections(markdown, targets = {}) {
-    // Defaults point at the live analyzer's own containers, so every
-    // EXISTING call site (analyzeIncident's post-stream render) keeps
-    // working unchanged. The dashboard detail view passes its own set
-    // of containers instead, so the same rendering logic - including
-    // the same error-handling for malformed mermaid/diff output - is
-    // never duplicated between "fresh from the stream" and "pulled back
-    // out of history."
-    const {
-      mermaidContainerEl = mermaidContainer,
-      diagramSectionEl = diagramSection,
-      diffContainerEl = diffContainer,
-      diffSectionEl = diffSection,
-    } = targets;
-
-    const mermaidCode = extractFencedBlock(markdown, 'mermaid');
-    const diffCode = extractFencedBlock(markdown, 'diff');
-
-    if (mermaidCode) {
-      const cleanedCode = sanitizeMermaidCode(mermaidCode);
-      try {
-        mermaidContainerEl.innerHTML = '';
-        const renderId = 'mermaid-' + Date.now();
-        const { svg } = await mermaid.render(renderId, cleanedCode);
-        mermaidContainerEl.innerHTML = svg;
-        diagramSectionEl.classList.remove('hidden');
-      } catch (err) {
-        console.error('Mermaid render failed:', err);
-        diagramSectionEl.classList.remove('hidden');
-        const escapedCode = cleanedCode
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-        mermaidContainerEl.innerHTML = `
-          <div class="text-sm text-red-300 w-full font-sans">
-            <p class="font-medium mb-2">Could not render the architecture diagram.</p>
-            <p class="text-xs text-red-400 mb-2">Parser error: ${(err.message || String(err)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
-            <details class="text-xs">
-              <summary class="cursor-pointer text-inkdim hover:text-ink">Show raw Mermaid source</summary>
-              <pre class="mt-2 p-2 bg-graphite text-ink rounded overflow-x-auto border border-line">${escapedCode}</pre>
-            </details>
-          </div>
-        `;
-      }
-    }
-
-    if (diffCode) {
-      try {
-        diffContainerEl.innerHTML = '';
-        const ui = new Diff2HtmlUI(diffContainerEl, diffCode, {
-          drawFileList: false,
-          matching: 'lines',
-          outputFormat: 'line-by-line',
-        });
-        ui.draw();
-        diffSectionEl.classList.remove('hidden');
-      } catch (err) {
-        console.error('Diff2html render failed:', err);
-        diffSectionEl.classList.remove('hidden');
-        diffContainerEl.innerHTML =
-          '<p class="text-sm text-red-300 font-sans">Could not render the git patch (invalid diff syntax returned by the model).</p>';
-      }
-    }
-  }
-
-  // Core streaming logic for /api/analyze - fetch() + manual SSE parsing
-  // (EventSource only supports GET, and we need to POST a JSON body).
-  async function analyzeIncident() {
-    const errorLog = errorLogInput.value.trim();
-    const sourceCode = sourceCodeInput.value.trim();
-    const additionalLogs = collectAdditionalLogs();
-
-    if (!errorLog) {
-      showStatus(statusBox, 'Please paste an error log before analyzing.');
-      return;
-    }
-
-    hideStatus(statusBox);
-    hideStatus(postmortemStatus);
-    setLoading(true);
-    resultCard.classList.remove('hidden');
-    copyBtn.classList.add('hidden');
-    postmortemBtn.classList.add('hidden');
-    postmortemFormatButtons.classList.add('hidden');
-    postmortemFormatButtons.classList.remove('flex');
-    postmortemMarkdown = '';
-    diagramSection.classList.add('hidden');
-    diffSection.classList.add('hidden');
-    similarIncidentsSection.classList.add('hidden');
-    resultBox.innerHTML = '';
-    fullAnalysisText = '';
-
-    try {
-      const response = await authFetch(`${API_BASE}/api/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error_log: errorLog,
-          source_code: sourceCode,
-          environment: environmentSelect.value,
-          additional_logs: additionalLogs,
-        }),
-      });
-
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => ({}));
-        showStatus(statusBox, errBody.detail || `Request failed with status ${response.status}.`);
-        setLoading(false);
-        return;
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buffer = '';
-      let streamEnded = false;
-
-      const handlePayload = async (payload) => {
-        if (payload.similar_incidents) {
-          renderSimilarIncidents(payload.similar_incidents);
-          return;
-        }
-        if (payload.error) {
-          showStatus(statusBox, payload.error);
-          return;
-        }
-        if (payload.done) {
-          streamEnded = true;
-          resultBox.classList.remove('typing-cursor');
-          copyBtn.classList.remove('hidden');
-          postmortemBtn.classList.remove('hidden');
-          // Only now do we parse mermaid/diff blocks - fences are
-          // guaranteed complete once the stream has finished.
-          await renderStructuredSections(fullAnalysisText);
-          return;
-        }
-        if (payload.text) {
-          fullAnalysisText += payload.text;
-          resultBox.classList.add('typing-cursor');
-          resultBox.innerHTML = marked.parse(applyConfidenceBadges(fullAnalysisText));
-        }
-      };
-
-      const processCompleteEvents = async (parts) => {
-        for (const part of parts) {
-          if (!part.startsWith('data: ')) continue;
-          const jsonStr = part.slice('data: '.length);
-          let payload;
-          try {
-            payload = JSON.parse(jsonStr);
-          } catch {
-            continue; // skip malformed event rather than crashing the UI
-          }
-          await handlePayload(payload);
-        }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          buffer += decoder.decode(); // flush with no more bytes
-          if (buffer.trim()) {
-            await processCompleteEvents(buffer.split('\n\n'));
-          }
-          break;
+            const res = await fetch(`${API_URL}${endpoint}`, options);
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.detail || `Server error: ${res.status}`);
+            }
+            return res.json();
         }
 
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop(); // last piece may be incomplete - keep it
-        await processCompleteEvents(parts);
-      }
-
-      // Safety net: if the server-side generator ever fails to emit the
-      // `done` event, still unlock the UI instead of leaving the button
-      // stuck in "Analyzing..." forever.
-      if (!streamEnded) {
-        resultBox.classList.remove('typing-cursor');
-        copyBtn.classList.remove('hidden');
-        postmortemBtn.classList.remove('hidden');
-        await renderStructuredSections(fullAnalysisText);
-      }
-    } catch (err) {
-      console.error(err);
-      showStatus(statusBox, 'Lost connection to the server. Please check your network and try again.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Calls /api/postmortem once, stores the result, then reveals the
-  // Markdown/PDF format buttons instead of immediately downloading.
-  async function generatePostmortem() {
-    hideStatus(postmortemStatus);
-    postmortemBtn.disabled = true;
-    postmortemBtn.textContent = 'Generating…';
-
-    try {
-      const response = await authFetch(`${API_BASE}/api/postmortem`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error_log: errorLogInput.value.trim(),
-          analysis_text: fullAnalysisText,
-        }),
-      });
-
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => ({}));
-        showStatus(postmortemStatus, errBody.detail || `Request failed with status ${response.status}.`);
-        return;
-      }
-
-      const data = await response.json();
-      postmortemMarkdown = data.markdown;
-
-      postmortemBtn.classList.add('hidden');
-      postmortemFormatButtons.classList.remove('hidden');
-      postmortemFormatButtons.classList.add('flex');
-      showStatus(postmortemStatus, 'Post-mortem ready — choose a format to download.', 'success');
-    } catch (err) {
-      console.error(err);
-      showStatus(postmortemStatus, 'Could not reach the server to generate the post-mortem.');
-    } finally {
-      postmortemBtn.disabled = false;
-      postmortemBtn.textContent = '📄 Generate Post-Mortem';
-    }
-  }
-
-  function downloadMarkdown(markdownText, filename) {
-    const blob = new Blob([markdownText], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  function downloadPostmortemPdf() {
-    const printDoc = postmortemPrintFrame.contentWindow.document;
-
-    printDoc.open();
-    printDoc.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8" />
-        <title>Incident Post-Mortem</title>
-        <style>
-          @page { margin: 20mm; }
-          body {
-            font-family: Georgia, 'Times New Roman', serif;
-            color: #1e293b;
-            line-height: 1.6;
-            font-size: 13px;
-          }
-          .header {
-            border-bottom: 3px solid #0f172a;
-            padding-bottom: 12px;
-            margin-bottom: 24px;
-          }
-          .header h1 { font-size: 22px; margin: 0; }
-          .header p { font-size: 11px; color: #64748b; margin: 4px 0 0 0; }
-          h2 {
-            font-size: 15px;
-            margin-top: 20px;
-            border-top: 1px solid #e2e8f0;
-            padding-top: 12px;
-          }
-          table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-          th, td { border: 1px solid #cbd5e1; padding: 6px 10px; text-align: left; font-size: 12px; }
-          th { background: #f1f5f9; }
-          code { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h1>Incident Post-Mortem Report</h1>
-          <p>Generated by SRE AI Copilot — ${new Date().toLocaleString()}</p>
-        </div>
-        ${marked.parse(postmortemMarkdown)}
-      </body>
-      </html>
-    `);
-    printDoc.close();
-
-    postmortemPrintFrame.onload = () => {
-      postmortemPrintFrame.contentWindow.focus();
-      postmortemPrintFrame.contentWindow.print();
-    };
-  }
-
-  // -------------------------------------------------------------------
-  // Dashboard: view switching, incident history, and incident detail
-  // -------------------------------------------------------------------
-  function switchToAnalyzerView() {
-    analyzerTabBtn.classList.add('active');
-    dashboardTabBtn.classList.remove('active');
-    analyzerView.classList.remove('hidden');
-    dashboardView.classList.add('hidden');
-  }
-
-  function switchToDashboardView() {
-    dashboardTabBtn.classList.add('active');
-    analyzerTabBtn.classList.remove('active');
-    dashboardView.classList.remove('hidden');
-    analyzerView.classList.add('hidden');
-    // Always show the list (not a stale detail view) when re-entering
-    // the dashboard tab, and fetch fresh data every time - the list is
-    // cheap to fetch and this avoids showing a stale count after a new
-    // analysis was just run from the other tab.
-    dashboardDetailSection.classList.add('hidden');
-    dashboardListSection.classList.remove('hidden');
-    loadDashboard();
-  }
-
-  analyzerTabBtn.addEventListener('click', switchToAnalyzerView);
-  dashboardTabBtn.addEventListener('click', switchToDashboardView);
-
-  function computeThisWeekCount(incidentsByDay) {
-    const dayMap = {};
-    (incidentsByDay || []).forEach(row => {
-      dayMap[row.date] = row.count;
-    });
-    const today = new Date();
-    let total = 0;
-    for (let i = 0; i < 7; i += 1) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
-      total += dayMap[key] || 0;
-    }
-    return total;
-  }
-
-  function renderSeverityChartFromBreakdown(severityBreakdown) {
-    const severityCounts = severityBreakdown || {};
-    const labels = ['Sev1', 'Sev2', 'Sev3', 'Sev4', 'Unknown'].filter(
-      key => key !== 'Unknown' || (severityCounts.Unknown || 0) > 0
-    );
-    const data = labels.map(label => severityCounts[label] || 0);
-    const colors = {
-      Sev1: '#EF4444', Sev2: '#FB923C', Sev3: '#EAB308', Sev4: '#4FA8FF', Unknown: '#5B6672',
-    };
-    const hasAnyData = data.some(count => count > 0);
-    if (!hasAnyData) {
-      severityChartCard.classList.add('hidden');
-      if (severityChartInstance) {
-        severityChartInstance.destroy();
-        severityChartInstance = null;
-      }
-      return;
-    }
-
-    severityChartCard.classList.remove('hidden');
-    if (severityChartInstance) {
-      severityChartInstance.destroy();
-    }
-    severityChartInstance = new Chart(severityChartCanvas, {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [{
-          data,
-          backgroundColor: labels.map(l => colors[l]),
-          borderRadius: 4,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: '#8D99A9' }, grid: { color: '#26313D' } },
-          y: { beginAtZero: true, ticks: { stepSize: 1, precision: 0, color: '#8D99A9' }, grid: { color: '#26313D' } },
-        },
-      },
-    });
-  }
-
-  function renderAnalytics(analytics) {
-    latestAnalytics = analytics;
-    statTotalIncidents.textContent = analytics.total_incidents || 0;
-    statTopEnvironment.textContent = (analytics.top_environments && analytics.top_environments[0])
-      ? analytics.top_environments[0].environment
-      : '—';
-    statThisWeek.textContent = computeThisWeekCount(analytics.incidents_by_day || []);
-    statDuplicateRate.textContent = `${analytics.duplicate_rate_percent || 0}%`;
-    statSuccessRate.textContent = typeof analytics.outcome_summary?.historical_success_rate === 'number'
-      ? `${Math.round(analytics.outcome_summary.historical_success_rate * 100)}%`
-      : '—';
-    renderSeverityChartFromBreakdown(analytics.severity_breakdown || {});
-  }
-
-  async function loadAnalytics() {
-    const resp = await authFetch(`${API_BASE}/api/incidents/analytics?days=30`);
-    if (!resp.ok) {
-      throw new Error(`Analytics request failed: ${resp.status}`);
-    }
-    const analytics = await resp.json();
-    renderAnalytics(analytics);
-  }
-
-  // Badge helpers for STRUCTURED data (incident.severity / incident.status
-  // fields from the API), distinct from applyConfidenceBadges which parses
-  // inline tags out of raw markdown text - these two code paths render the
-  // same visual style but operate on different kinds of input.
-  function severityBadgeHtml(severity) {
-    const level = (severity || 'Unknown').toLowerCase(); // e.g. "sev1", "unknown"
-    const cssClass = /^sev[1-4]$/.test(level) ? `severity-${level}` : 'severity-unknown';
-    return `<span class="severity-badge ${cssClass}">${severity || 'Unknown'}</span>`;
-  }
-  function statusBadgeHtml(status) {
-    const cssClass = `status-${(status || 'open').toLowerCase()}`;
-    return `<span class="status-badge ${cssClass}">${status || 'Open'}</span>`;
-  }
-
-  function escapeHtml(text) {
-    return (text || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
-
-  function buildIncidentsQuery() {
-    const params = new URLSearchParams();
-    params.set('limit', '100');
-    params.set('offset', '0');
-
-    const search = filterSearchInput.value.trim();
-    const environment = filterEnvironmentSelect.value.trim();
-    const severity = filterSeveritySelect.value.trim();
-    const status = filterStatusSelect.value.trim();
-    const duplicateOnly = filterDuplicateOnly.checked;
-
-    if (search) params.set('search', search);
-    if (environment) params.set('environment', environment);
-    if (severity) params.set('severity', severity);
-    if (status) params.set('status', status);
-    if (duplicateOnly) params.set('duplicate_only', 'true');
-    return params.toString();
-  }
-
-  function formatIncidentCard(incident) {
-    const preview = escapeHtml(incident.error_log_preview);
-    const duplicateBadge = incident.duplicate_count > 1
-      ? `<span class="env-badge border-orange-500/40 text-orange-300">cluster ${incident.duplicate_count}</span>`
-      : '';
-    const outcomeBadge = typeof incident.historical_success_rate === 'number'
-      ? `<span class="env-badge border-emerald-500/40 text-emerald-300">fix success ${Math.round(incident.historical_success_rate * 100)}% (n=${incident.outcome_samples || 0})</span>`
-      : '';
-    return `
-      <div class="incident-card" data-incident-id="${incident.id}">
-        <div class="flex items-center justify-between gap-2 mb-1">
-          <div>
-            <span class="env-badge">${incident.environment}</span>
-            ${severityBadgeHtml(incident.severity)}
-            ${statusBadgeHtml(incident.status)}
-            ${duplicateBadge}
-            ${outcomeBadge}
-          </div>
-          <span class="text-xs text-inkfaint">${incident.created_at}</span>
-        </div>
-        <div class="text-sm font-mono text-inkdim truncate">${preview}</div>
-      </div>
-    `;
-  }
-
-  async function loadDashboard() {
-    dashboardEmptyState.classList.add('hidden');
-    dashboardIncidentList.classList.remove('hidden');
-    dashboardLoadingState.classList.remove('hidden');
-    dashboardIncidentList.innerHTML = '';
-
-    try {
-      await loadAnalytics();
-
-      const query = buildIncidentsQuery();
-      const resp = await authFetch(`${API_BASE}/api/incidents?${query}`);
-      if (!resp.ok) {
-        dashboardLoadingState.classList.add('hidden');
-        const errBody = await resp.json().catch(() => ({}));
-        dashboardIncidentList.innerHTML = `<p class="text-sm text-red-300 font-sans">${escapeHtml(errBody.detail || 'Could not load incident history.')}</p>`;
-        return;
-      }
-      const data = await resp.json();
-      dashboardLoadingState.classList.add('hidden');
-
-      if (data.incidents.length === 0) {
-        dashboardEmptyState.classList.remove('hidden');
-        dashboardIncidentList.classList.add('hidden');
-        return;
-      }
-
-      dashboardIncidentList.innerHTML = data.incidents.map(formatIncidentCard).join('');
-
-      // Event delegation on the list container rather than one listener
-      // per card - simpler to keep correct as cards are re-rendered on
-      // every load, and avoids accumulating duplicate listeners.
-      dashboardIncidentList.querySelectorAll('.incident-card').forEach(card => {
-        card.addEventListener('click', () => {
-          viewIncidentDetail(card.dataset.incidentId);
-        });
-      });
-    } catch (err) {
-      console.error('Failed to load dashboard:', err);
-      dashboardLoadingState.classList.add('hidden');
-      dashboardIncidentList.innerHTML =
-        '<p class="text-sm text-red-300 font-sans">Could not reach the server to load incident history/analytics.</p>';
-    }
-  }
-
-  async function viewIncidentDetail(incidentId) {
-    dashboardListSection.classList.add('hidden');
-    dashboardDetailSection.classList.remove('hidden');
-    dashboardResultBox.innerHTML = '<p class="text-sm text-inkfaint font-sans">Loading…</p>';
-    dashboardDiagramSection.classList.add('hidden');
-    dashboardDiffSection.classList.add('hidden');
-    dashboardDetailMeta.textContent = '';
-    dashboardDedupInfo.textContent = '';
-    dashboardOutcomeSummary.textContent = '';
-    outcomeNoteInput.value = '';
-    outcomeStatus.classList.add('hidden');
-
-    try {
-      const resp = await authFetch(`${API_BASE}/api/incidents/${incidentId}`);
-      if (!resp.ok) {
-        dashboardResultBox.innerHTML =
-          '<p class="text-sm text-red-300 font-sans">Could not load this incident (it may no longer exist).</p>';
-        return;
-      }
-      const incident = await resp.json();
-
-      dashboardDetailMeta.textContent = `${incident.environment} · ${incident.created_at}`;
-      const clusterCount = incident.duplicate_count || 1;
-      if (clusterCount > 1) {
-        if (incident.duplicate_of_id) {
-          dashboardDedupInfo.textContent =
-            `Dedup cluster: ${clusterCount} incidents share this fingerprint. This one is linked to root incident #${incident.duplicate_of_id}.`;
-        } else {
-          dashboardDedupInfo.textContent =
-            `Dedup cluster: ${clusterCount} incidents share this fingerprint. This incident is likely the cluster root.`;
+        async function handleAuth(action) {
+            const user = document.getElementById('authUsername').value;
+            const pass = document.getElementById('authPassword').value;
+            const errDiv = document.getElementById('authError');
+            const errText = document.getElementById('authErrorText');
+            
+            try {
+                const data = await apiCall(`/api/${action}`, 'POST', { username: user, password: pass });
+                currentToken = data.access_token;
+                currentUsername = data.username;
+                localStorage.setItem('patchops_token', currentToken);
+                localStorage.setItem('patchops_user', currentUsername);
+                
+                document.getElementById('authPanel').classList.add('hidden');
+                document.getElementById('appPanel').classList.remove('hidden');
+                document.getElementById('currentUserLabel').textContent = currentUsername;
+                switchTab('analysis');
+            } catch (e) {
+                errText.textContent = e.message;
+                errDiv.classList.remove('hidden');
+            }
         }
-      } else {
-        dashboardDedupInfo.textContent = 'Dedup cluster: no duplicates detected for this incident pattern.';
-      }
 
-      dashboardOutcomeSummary.textContent = typeof incident.historical_success_rate === 'number'
-        ? `Historical remediation success: ${Math.round(incident.historical_success_rate * 100)}% from ${incident.outcome_samples || 0} feedback sample(s).`
-        : 'Historical remediation success: no feedback recorded yet.';
+        function logout() {
+            localStorage.removeItem('patchops_token');
+            localStorage.removeItem('patchops_user');
+            currentToken = null;
+            location.reload();
+        }
 
-      dashboardStatusSelect.value = incident.status || 'Open';
-      dashboardStatusSelect.dataset.previousValue = incident.status || 'Open';
-      currentDetailIncidentId = incident.id;
-      renderMarkdownInto(dashboardResultBox, incident.analysis_text);
-      // Reuses the SAME rendering function the live analyzer uses,
-      // just pointed at the dashboard's own containers via the
-      // `targets` parameter - so a mermaid diagram or git diff that
-      // rendered correctly when first generated will render identically
-      // when viewed back out of history.
-      await renderStructuredSections(incident.analysis_text, {
-        mermaidContainerEl: dashboardMermaidContainer,
-        diagramSectionEl: dashboardDiagramSection,
-        diffContainerEl: dashboardDiffContainer,
-        diffSectionEl: dashboardDiffSection,
-      });
-    } catch (err) {
-      console.error('Failed to load incident detail:', err);
-      dashboardResultBox.innerHTML =
-        '<p class="text-sm text-red-300 font-sans">Could not reach the server to load this incident.</p>';
-    }
-  }
+        function initApp() {
+            if (currentToken) {
+                document.getElementById('authPanel').classList.add('hidden');
+                document.getElementById('appPanel').classList.remove('hidden');
+                document.getElementById('currentUserLabel').textContent = currentUsername;
+                switchTab('analysis');
+            }
+        }
 
-  dashboardStatusSelect.addEventListener('change', async () => {
-    if (currentDetailIncidentId === null) return;
-    const newStatus = dashboardStatusSelect.value;
-    const previousValue = dashboardStatusSelect.dataset.previousValue || 'Open';
+        function switchTab(tabId) {
+            ['analysis', 'dashboard', 'settings'].forEach(t => {
+                document.getElementById(`view-${t}`).classList.add('hidden');
+            });
+            document.getElementById(`view-${tabId}`).classList.remove('hidden');
 
-    try {
-      const resp = await authFetch(`${API_BASE}/api/incidents/${currentDetailIncidentId}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (!resp.ok) {
-        // Revert the dropdown to its prior value on failure, so the UI
-        // never shows a status that wasn't actually saved server-side.
-        dashboardStatusSelect.value = previousValue;
-        console.error('Failed to update status:', resp.status);
-        return;
-      }
-      dashboardStatusSelect.dataset.previousValue = newStatus;
-    } catch (err) {
-      dashboardStatusSelect.value = previousValue;
-      console.error('Failed to update status:', err);
-    }
-  });
+            const btns = document.querySelectorAll('.tab-btn');
+            btns.forEach(btn => {
+                btn.className = "tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent";
+            });
+            const activeBtn = document.querySelector(`button[onclick="switchTab('${tabId}')"]`);
+            if (activeBtn) {
+                activeBtn.className = "tab-btn active flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all bg-slate-800 text-primary border border-slate-700 shadow-inner";
+            }
 
-  async function submitOutcome(outcome) {
-    if (currentDetailIncidentId === null) return;
+            if (tabId === 'dashboard') loadDashboard();
+            if (tabId === 'settings') loadSettings();
+        }
 
-    outcomeWorkedBtn.disabled = true;
-    outcomePartialBtn.disabled = true;
-    outcomeFailedBtn.disabled = true;
-    showOutcomeStatus('Saving outcome feedback…', 'info');
-    try {
-      const resp = await authFetch(`${API_BASE}/api/incidents/${currentDetailIncidentId}/outcome`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          outcome,
-          note: outcomeNoteInput.value.trim(),
-        }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        showOutcomeStatus(data.detail || 'Could not save outcome feedback.', 'error');
-        return;
-      }
-      showOutcomeStatus(
-        `Saved "${outcome}" outcome. Historical success now ${typeof data.summary?.historical_success_rate === 'number' ? Math.round(data.summary.historical_success_rate * 100) + '%' : 'not available yet'}.`,
-        'success'
-      );
-      await viewIncidentDetail(currentDetailIncidentId);
-      await loadAnalytics();
-    } catch (err) {
-      console.error('Failed to submit outcome:', err);
-      showOutcomeStatus('Could not reach server to save outcome feedback.', 'error');
-    } finally {
-      outcomeWorkedBtn.disabled = false;
-      outcomePartialBtn.disabled = false;
-      outcomeFailedBtn.disabled = false;
-    }
-  }
+        function formatMarkdownWithTags(text) {
+            let html = marked.parse(text);
+            
+            // Highlight SEVERITY properly
+            html = html.replace(/\[SEVERITY:\s*(Sev[1-4])\]/gi, (match, sev) => {
+                let colorClass = sev.toLowerCase() === 'sev1' ? 'text-red-400 bg-red-400/10 border-red-400/30' :
+                                 sev.toLowerCase() === 'Sev2' || sev.toLowerCase() === 'sev2' ? 'text-orange-400 bg-orange-400/10 border-orange-400/30' :
+                                 sev.toLowerCase() === 'Sev3' || sev.toLowerCase() === 'sev3' ? 'text-yellow-400 bg-yellow-400/10 border-yellow-400/30' :
+                                 'text-blue-400 bg-blue-400/10 border-blue-400/30';
+                return `<div class="mb-4 inline-flex items-center gap-2 px-3 py-1 rounded-md border text-xs font-bold tracking-widest uppercase shadow-sm ${colorClass}"><i class="ph-fill ph-warning-circle text-lg"></i> SEVERITY: ${sev.toUpperCase()}</div>`;
+            });
 
-  outcomeWorkedBtn.addEventListener('click', () => submitOutcome('worked'));
-  outcomePartialBtn.addEventListener('click', () => submitOutcome('partial'));
-  outcomeFailedBtn.addEventListener('click', () => submitOutcome('failed'));
+            // Parse confidence tags AFTER markdown rendering to prevent escaping
+            html = html.replace(/\[HIGH-CONFIDENCE\]/gi, '<span class="tag-high"><i class="ph-bold ph-check-circle mr-1 text-sm"></i> HIGH CONFIDENCE</span>');
+            html = html.replace(/\[INFERRED\]/gi, '<span class="tag-inferred"><i class="ph-bold ph-lightbulb mr-1 text-sm"></i> INFERRED</span>');
 
-  applyFiltersBtn.addEventListener('click', () => {
-    loadDashboard();
-  });
-  clearFiltersBtn.addEventListener('click', () => {
-    filterSearchInput.value = '';
-    filterEnvironmentSelect.value = '';
-    filterSeveritySelect.value = '';
-    filterStatusSelect.value = '';
-    filterDuplicateOnly.checked = false;
-    loadDashboard();
-  });
-  filterSearchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      loadDashboard();
-    }
-  });
+            return DOMPurify.sanitize(html);
+        }
 
-  backToListBtn.addEventListener('click', () => {
-    dashboardDetailSection.classList.add('hidden');
-    dashboardListSection.classList.remove('hidden');
-    // Refetch rather than just toggling visibility, so a status change
-    // just made in the detail view is immediately reflected in the list
-    // and in the stat cards/severity chart above it.
-    loadDashboard();
-  });
+        async function analyzeIncident() {
+            const errLog = document.getElementById('errorLogInput').value;
+            const srcCode = document.getElementById('sourceCodeInput').value;
+            const env = document.getElementById('envInput').value;
+            const btn = document.getElementById('analyzeBtn');
+            const errToast = document.getElementById('apiError');
+            const errText = document.getElementById('apiErrorText');
+            
+            if (!errLog) {
+                errText.textContent = "Error log cannot be empty.";
+                errToast.classList.remove('hidden');
+                return;
+            }
 
-  analyzeBtn.addEventListener('click', analyzeIncident);
-  postmortemBtn.addEventListener('click', generatePostmortem);
-  downloadMdBtn.addEventListener('click', () => {
-    downloadMarkdown(postmortemMarkdown, `incident-postmortem-${Date.now()}.md`);
-  });
-  downloadPdfBtn.addEventListener('click', downloadPostmortemPdf);
+            errToast.classList.add('hidden');
+            btn.disabled = true;
+            btn.innerHTML = `<i class="ph-bold ph-spinner animate-spin"></i> <span>Analyzing <span class="typewriter"></span></span>`;
+            document.getElementById('outputContainer').classList.remove('hidden');
+            
+            const outRca = document.getElementById('rcaOutput');
+            const outArch = document.getElementById('archContainer');
+            const outPatch = document.getElementById('patchContainer');
+            
+            outRca.innerHTML = '<p class="text-slate-400 font-mono text-xs flex items-center gap-2"><i class="ph ph-plugs-connected text-lg animate-pulse text-primary"></i> Connecting to Gemini AI engine...</p>';
+            outArch.classList.add('hidden');
+            outPatch.classList.add('hidden');
+            document.getElementById('mermaidOutput').innerHTML = '';
+            document.getElementById('diffOutput').innerHTML = '';
 
-  errorLogInput.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      analyzeIncident();
-    }
-  });
+            let fullText = "";
 
-  copyBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(resultBox.innerText).then(() => {
-      copyBtn.textContent = 'Copied!';
-      setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
-    });
-  });
-</script>
+            try {
+                const response = await fetch(`${API_URL}/api/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentToken}` },
+                    body: JSON.stringify({ error_log: errLog, source_code: srcCode, environment: env })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json().catch(()=>({}));
+                    throw new Error(errData.detail || `HTTP Error ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value, { stream: true });
+                    const lines = chunk.split('\n\n');
+                    
+                    for (let line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.substring(6));
+                            if (data.error) throw new Error(data.error);
+                            if (data.done) break;
+                            
+                            if (data.text) {
+                                fullText += data.text;
+                                const sect1 = fullText.split("## 2.")[0];
+                                outRca.innerHTML = formatMarkdownWithTags(sect1);
+                            }
+                        }
+                    }
+                }
+
+                // Render Mermaid Diagram
+                const mermaidMatch = fullText.match(/```mermaid\n([\s\S]*?)```/i);
+                if (mermaidMatch) {
+                    outArch.classList.remove('hidden');
+                    const mermaidCode = mermaidMatch[1].trim();
+                    try {
+                        const { svg } = await mermaid.render('mermaid-svg', mermaidCode);
+                        document.getElementById('mermaidOutput').innerHTML = svg;
+                    } catch (e) {
+                        document.getElementById('mermaidOutput').innerHTML = `<div class="text-red-400 text-xs font-mono p-4 bg-red-900/10 border border-red-900/30 rounded-lg">Mermaid Parse Error: ${e.message}</div>`;
+                    }
+                }
+
+                // Render Git Diff with diff2html
+                const diffMatch = fullText.match(/```diff\n([\s\S]*?)```/i);
+                if (diffMatch) {
+                    outPatch.classList.remove('hidden');
+                    const diffCode = diffMatch[1].trim();
+                    const diffHtml = Diff2Html.html(diffCode, {
+                        drawFileList: false,
+                        matching: 'lines',
+                        outputFormat: 'line-by-line',
+                        colorScheme: 'dark'
+                    });
+                    document.getElementById('diffOutput').innerHTML = diffHtml;
+                }
+
+            } catch (e) {
+                errText.textContent = `Analysis Failed: ${e.message}`;
+                errToast.classList.remove('hidden');
+                outRca.innerHTML = `<p class="text-red-400 text-sm font-medium"><i class="ph-bold ph-warning"></i> Stream interrupted or failed.</p>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="ph-bold ph-lightning"></i> <span>Analyze Incident</span>`;
+            }
+        }
+
+        async function loadDashboard() {
+            const tbody = document.getElementById('incidentTableBody');
+            try {
+                tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-slate-500 font-mono text-xs"><i class="ph ph-spinner animate-spin text-lg inline-block align-middle"></i> Fetching records...</td></tr>`;
+                
+                const sevFilter = document.getElementById('filterSeverity').value;
+                const url = `/api/incidents?limit=20${sevFilter ? `&severity=${sevFilter}` : ''}`;
+                const data = await apiCall(url);
+                
+                document.getElementById('dashTotal').textContent = data.total_count || data.count || 0;
+                document.getElementById('dashWeek').textContent = data.count || 0;
+                
+                let topEnv = "-";
+                if(data.incidents && data.incidents.length > 0) {
+                    const envs = {};
+                    let topCount = 0;
+                    data.incidents.forEach(i => {
+                        envs[i.environment] = (envs[i.environment] || 0) + 1;
+                        if (envs[i.environment] > topCount) {
+                            topCount = envs[i.environment];
+                            topEnv = i.environment;
+                        }
+                    });
+                }
+                document.getElementById('dashEnv').textContent = topEnv;
+
+                tbody.innerHTML = '';
+                if (!data.incidents || data.incidents.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-slate-500 font-medium bg-slate-800/20">No incidents match your criteria.</td></tr>`;
+                    return;
+                }
+
+                data.incidents.forEach(inc => {
+                    const badgeColor = inc.severity === 'Sev1' ? 'text-red-400 bg-red-400/10 border-red-400/30' :
+                                     inc.severity === 'Sev2' ? 'text-orange-400 bg-orange-400/10 border-orange-400/30' :
+                                     'text-yellow-400 bg-yellow-400/10 border-yellow-400/30';
+                    
+                    const row = `
+                        <tr class="hover:bg-slate-800 transition-colors group cursor-pointer">
+                            <td class="px-6 py-4 font-mono text-slate-400 group-hover:text-primary transition-colors">#${inc.id}</td>
+                            <td class="px-6 py-4 text-slate-300 font-medium whitespace-nowrap">${new Date(inc.created_at).toLocaleDateString()}</td>
+                            <td class="px-6 py-4"><span class="bg-slate-800 border border-slate-600 shadow-sm text-slate-300 px-3 py-1 rounded-md text-xs font-semibold uppercase tracking-wider">${inc.environment}</span></td>
+                            <td class="px-6 py-4"><span class="border px-3 py-1 rounded-md text-xs font-bold uppercase tracking-widest ${badgeColor}">${inc.severity}</span></td>
+                            <td class="px-6 py-4 text-slate-400 truncate max-w-sm font-mono text-xs opacity-80 group-hover:opacity-100" title="${inc.error_log_preview}">${inc.error_log_preview.substring(0, 80)}...</td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-red-400 bg-red-900/10 font-medium text-sm">Failed to load history: ${e.message}</td></tr>`;
+            }
+        }
+
+        async function loadSettings() {
+            try {
+                const data = await apiCall('/api/settings');
+                document.getElementById('set-slack-webhook').value = data.slack_webhook_url || '';
+                document.getElementById('set-slack-channel').value = data.slack_channel_id || '';
+                document.getElementById('set-jira-url').value = data.jira_base_url || '';
+                document.getElementById('set-jira-key').value = data.jira_project_key || '';
+                document.getElementById('set-jira-email').value = data.jira_email || '';
+                document.getElementById('set-gh-repo').value = data.github_repo || '';
+            } catch (e) {
+                console.error("Failed to load settings:", e);
+            }
+        }
+
+        async function saveSettings() {
+            const payload = {
+                slack_webhook_url: document.getElementById('set-slack-webhook').value,
+                slack_bot_token: document.getElementById('set-slack-token').value,
+                slack_channel_id: document.getElementById('set-slack-channel').value,
+                jira_base_url: document.getElementById('set-jira-url').value,
+                jira_project_key: document.getElementById('set-jira-key').value,
+                jira_email: document.getElementById('set-jira-email').value,
+                jira_api_token: document.getElementById('set-jira-token').value,
+                github_repo: document.getElementById('set-gh-repo').value,
+                github_token: document.getElementById('set-gh-token').value,
+                generic_webhook_events: "all"
+            };
+
+            const msgDiv = document.getElementById('settingsMsg');
+            
+            try {
+                await apiCall('/api/settings', 'PUT', payload);
+                msgDiv.innerHTML = `<i class="ph-fill ph-check-circle text-lg"></i> Configuration Saved Successfully`;
+                msgDiv.className = "text-center text-sm font-semibold py-3 px-4 rounded-xl mb-4 bg-green-900/30 text-green-400 border border-green-800/50 shadow-lg block flex items-center justify-center gap-2";
+                setTimeout(() => msgDiv.classList.add('hidden'), 4000);
+            } catch (e) {
+                msgDiv.innerHTML = `<i class="ph-fill ph-warning-circle text-lg"></i> Save Error: ${e.message}`;
+                msgDiv.className = "text-center text-sm font-semibold py-3 px-4 rounded-xl mb-4 bg-red-900/30 text-red-400 border border-red-800/50 shadow-lg block flex items-center justify-center gap-2";
+            }
+        }
+
+        initApp();
+    </script>
 </body>
 </html>

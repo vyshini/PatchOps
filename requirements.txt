@@ -1,15 +1,33 @@
 # FastAPI + ASGI server
-fastapi==0.115.0
+# Pinned to 0.135.0 (not 0.115.0) specifically because 0.115.0 hard-caps
+# its starlette dependency at <0.39.0, which is affected by several CVEs
+# (see: pip-audit). 0.135.0 is the lowest FastAPI version that drops that
+# upper bound (requires starlette>=0.46.0 with no ceiling), letting us
+# pin a fully-patched starlette below without fighting FastAPI's own
+# constraint. Verified via `pip-audit -r requirements.txt` (clean) and
+# the full test suite (all passing) before bumping - this is NOT a
+# "jump to latest and hope" upgrade.
+fastapi==0.135.0
+starlette==1.3.1
 uvicorn[standard]==0.30.6
 
 # Gemini SDK - powers both /api/analyze (streaming) and /api/postmortem (non-streaming)
 google-generativeai==0.8.3
 
-# Loads GEMINI_API_KEY etc. from .env in local/dev
-python-dotenv==1.0.1
+# Loads GEMINI_API_KEY etc. from .env in local/dev.
+# 1.2.2 (not 1.0.1) - 1.0.1 has a known CVE per pip-audit; 1.2.2 is the
+# fix version and required no code changes (env-var loading API unchanged).
+python-dotenv==1.2.2
 
 # Request validation for IncidentAnalysisRequest / PostMortemRequest
 pydantic==2.9.2
+
+# Async HTTP client - used for Slack (webhook + bot chat.postMessage),
+# Jira (issue create/comment), and GitHub (repo/branch/PR) API calls.
+# Was already imported by main.py for Slack but was missing from this
+# file - Phase E's Jira/GitHub integrations made the gap obvious, since
+# a fresh `pip install -r requirements.txt` would otherwise ImportError.
+httpx==0.27.2
 
 # NOTE: Mermaid.js and diff2html (used to render the diagram + git diff
 # blocks in Section 2/3 of the analysis) are loaded via CDN in index.html -

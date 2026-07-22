@@ -1,9 +1,9 @@
 """
-SRE AI Copilot - Enterprise Incident Resolution Hub - FastAPI Backend
+PatchOps - Enterprise Incident Resolution Hub - FastAPI Backend
 ----------------------------------------------------------------------
 Two main endpoints:
 
-  POST /api/analyze     - streams a 3-section incident analysis (Root
+  POST /api/analyze      - streams a 3-section incident analysis (Root
                            Cause Analysis with confidence tagging and
                            optional multi-log correlation timeline,
                            Architecture Impact as a Mermaid.js diagram,
@@ -21,6 +21,33 @@ Two main endpoints:
 Mock and real generators for /api/analyze produce the same "shape" of
 output (an async stream of text chunks), so the endpoint and the frontend
 don't need to know or care whether MOCK_MODE is on or off.
+
+Phase E - Integrations + automation
+------------------------------------
+This phase wires the tool into a real incident-response workflow instead
+of just producing an analysis and leaving it in the browser:
+
+  - Slack: enriched notifications (severity color, deep link button,
+    Jira/GitHub links if present). If the user has configured a Slack
+    BOT token + channel (instead of, or in addition to, an Incoming
+    Webhook), notifications use chat.postMessage and thread every
+    follow-up event (status change, outcome feedback) under the first
+    message for that incident - a plain Incoming Webhook has no `ts` to
+    thread against, so that path still posts standalone messages.
+  - Jira: creates a ticket from an incident's analysis on first click,
+    and adds a comment to the SAME ticket on subsequent clicks (tracked
+    via incidents.jira_issue_key) rather than opening duplicates.
+  - GitHub: scaffolds a PR from the incident's git diff by opening a new
+    branch and committing the diff as a proposed-patch file for a human
+    to review and apply - this is intentionally a *scaffold*, not an
+    auto-merge, since applying an LLM-authored diff unattended is not
+    something this tool should ever do silently.
+  - Generic outbound webhook: POSTs a JSON payload to a user-configured
+    URL on incident_created / status_changed / outcome_recorded events,
+    for wiring into anything not natively integrated (PagerDuty, a
+    custom automation, etc). Fire-and-forget: failures are logged, never
+    surfaced to the user or allowed to block the request that triggered
+    them.
 """
 
 import os
@@ -34,7 +61,7 @@ import re
 import base64
 from pathlib import Path
 from collections import deque
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator, List, Optional
 
 import httpx
 import google.generativeai as genai
@@ -62,11 +89,14 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
-logger = logging.getLogger("sre-copilot")
+logger = logging.getLogger("patchops")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-MOCK_MODE = os.getenv("MOCK_MODE", "true").lower() == "true"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
+# Explicitly coerce MOCK_MODE so it respects false/0/off cleanly
+_mock_env = os.getenv("MOCK_MODE", "false").strip().lower()
+MOCK_MODE = _mock_env in ("true", "1", "yes", "on")
+
 PORT = int(os.getenv("PORT", 8000))
 CORS_ALLOW_ORIGINS = os.getenv(
     "CORS_ALLOW_ORIGINS",
@@ -77,27 +107,20 @@ FRONTEND_TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
 
 FREE_TIER_RPM = int(os.getenv("FREE_TIER_RPM", "10"))
 
+APP_BASE_URL = os.getenv("APP_BASE_URL", f"http://localhost:{PORT}").rstrip("/")
+
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Initializes the SQLite incidents table used for the "similar past
-# incidents" retrieval feature. Safe to call on every startup - it's a
-# CREATE TABLE IF NOT EXISTS under the hood.
 incident_store.init_db()
 
-app = FastAPI(title="SRE AI Copilot")
+app = FastAPI(title="PatchOps")
 
 
 # ---------------------------------------------------------------------------
 # 1b. IN-MEMORY RATE LIMITER
 # ---------------------------------------------------------------------------
 class SlidingWindowRateLimiter:
-    """
-    Tracks request timestamps in a rolling 60-second window and rejects
-    new requests once the window is full. Protects the free Gemini quota
-    from being exhausted by a burst of traffic or a buggy retry loop.
-    """
-
     def __init__(self, max_requests: int, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
@@ -154,81 +177,46 @@ async def log_requests(request: Request, call_next):
 # 2. REQUEST SCHEMAS
 # ---------------------------------------------------------------------------
 class LogSource(BaseModel):
-    """
-    One labeled log input. `label` identifies which service/system this
-    log came from (e.g. "API Gateway", "Payment Worker", "Database") so
-    the model can reason about WHICH system said what when correlating
-    events across multiple logs - without a label, the model has no way
-    to distinguish "the error appeared in service A three seconds after
-    service B logged a timeout" from noise.
-    """
     label: str
     content: str
 
 
 class IncidentAnalysisRequest(BaseModel):
-    """
-    Pydantic model = automatic request validation.
-    If the client POSTs JSON that doesn't match this shape, FastAPI rejects
-    it with a 422 before our code even runs.
-
-    `source_code` is optional - a user may only have the error log and not
-    the relevant file, in which case we still analyze the log alone but
-    can't produce a precise git diff (the prompt accounts for this below).
-
-    Backward-compatible request shape: `error_log` remains supported as
-    the single-log path (existing frontend behavior, and the simplest
-    possible request). `additional_logs` is new and optional - when
-    present, the backend treats this as a multi-log correlation request
-    and asks the model to build a cross-service timeline instead of
-    analyzing one log in isolation.
-    """
     error_log: str
     source_code: str = ""
-    environment: str = "General"  # e.g. "Docker", "Python", "Kubernetes", "AWS"
+    environment: str = "General"
     additional_logs: List[LogSource] = []
 
 
 class PostMortemRequest(BaseModel):
-    """
-    Input for the post-mortem generator. `analysis_text` is the full RCA
-    markdown that was already streamed to the client from /api/analyze -
-    we reuse it as context instead of re-deriving the root cause from
-    scratch, so the post-mortem stays consistent with what the user
-    already saw and (presumably) acted on.
-    """
     error_log: str
     analysis_text: str
 
 
 class StatusUpdateRequest(BaseModel):
-    """Body for PATCH /api/incidents/{id}/status. `status` is validated
-    against incident_store.VALID_STATUSES inside the endpoint itself
-    (not here via a Literal type) so the error message can name the
-    exact valid options in a clean 400, rather than FastAPI's default
-    422 validation error format."""
     status: str
 
 
 class SettingsUpdateRequest(BaseModel):
-    """Body for PUT /api/settings integration configuration."""
     slack_webhook_url: str = ""
+    slack_bot_token: str = ""
+    slack_channel_id: str = ""
     jira_base_url: str = ""
     jira_project_key: str = ""
     jira_email: str = ""
     jira_api_token: str = ""
     github_repo: str = ""
     github_token: str = ""
+    generic_webhook_url: str = ""
+    generic_webhook_events: str = "all"
 
 
 class OutcomeRecordRequest(BaseModel):
-    """Body for POST /api/incidents/{id}/outcome."""
     outcome: str
     note: str = ""
 
 
 class ExternalIssueRequest(BaseModel):
-    """Optional overrides for external ticket/issue creation."""
     title: str = ""
     include_diff: bool = True
 
@@ -242,13 +230,6 @@ def build_analysis_system_prompt(
     similar_context: str = "",
     is_multi_log: bool = False,
 ) -> str:
-    """
-    Builds the persona + strict output contract for the incident analysis
-    stream. Composes three optional instruction blocks on top of the base
-    prompt depending on what context is available for this request:
-      - similar_context: retrieved past incidents (RAG)
-      - is_multi_log: whether multiple labeled logs were provided
-    """
     source_code_instruction = (
         "The user has provided relevant source code below the error log. "
         "Use it to produce an exact, applicable git diff in Section 3."
@@ -267,11 +248,7 @@ def build_analysis_system_prompt(
 PRIOR SIMILAR INCIDENTS: The system has retrieved past incidents that are
 semantically similar to this one, shown below. If they are genuinely
 relevant to this failure, reference them explicitly in Section 1 as a
-[HIGH-CONFIDENCE] pattern match (e.g. "[HIGH-CONFIDENCE] This matches a
-prior incident with {{similarity}}% similarity, where the root cause
-was..."). If, after reviewing them, they are NOT actually relevant to
-this specific error, ignore them entirely and do not mention them - do
-not force a connection that isn't real.
+[HIGH-CONFIDENCE] pattern match. If they are NOT relevant, ignore them.
 
 {similar_context}"""
 
@@ -282,19 +259,10 @@ not force a connection that isn't real.
 MULTI-LOG CORRELATION (required): The user has provided logs from MULTIPLE
 services for the same incident, each labeled with its source. Do not
 analyze each log in isolation. Instead:
-  1. Identify the chronological order of relevant events ACROSS all
-     provided logs, using timestamps where available (or, if timestamps
-     are missing/inconsistent, reasonable causal ordering).
-  2. Build a short timeline as part of Section 1, using this exact format
-     for each entry:
+  1. Identify chronological order of events ACROSS all logs using timestamps.
+  2. Build a timeline as part of Section 1 using this exact format:
      [TIMELINE] <service label>: <what happened> (<timestamp if known>)
-  3. Explicitly state which service's failure appears to be the
-     UPSTREAM/originating cause and which are downstream symptoms/effects
-     of it - correlation across services is the whole point, not a
-     restatement of each log separately.
-  4. Apply the same [HIGH-CONFIDENCE] / [INFERRED] tagging rules to
-     timeline entries and causal claims as to everything else in
-     Section 1."""
+  3. State clearly which service's failure is the UPSTREAM/originating cause."""
 
     return f"""You are a Senior Site Reliability Engineer (SRE) and Principal
 Software Architect with 15+ years of experience in distributed systems,
@@ -308,55 +276,32 @@ three headings, in this order, and nothing else before or after them:
 SEVERITY CLASSIFICATION (required, must be the very first line of this
 section, before any other text): classify this incident's severity using
 EXACTLY this format on its own line: `[SEVERITY: SevX]` where X is 1, 2,
-3, or 4. Use these criteria:
-  - Sev1 - Critical: complete outage, data loss/corruption, or a security
-    breach; affects all or most users with no workaround.
-  - Sev2 - High: major functionality broken or badly degraded for a
-    significant subset of users; no reasonable workaround exists.
-  - Sev3 - Medium: partial degradation, a workaround exists, or impact is
-    limited to a non-critical feature or small subset of users.
-  - Sev4 - Low: minor/cosmetic issue, edge case, or negligible user
-    impact.
-Base this on the actual evidence in the log/code, not worst-case
-speculation - an error that self-recovers or affects one edge case is
-NOT automatically Sev1 just because exceptions look alarming.
+3, or 4 (Sev1 - Critical, Sev2 - High, Sev3 - Medium, Sev4 - Low).
 
 Plain-English explanation of what went wrong and why, referencing specific
 lines/signals from the log(s) and code.
 
 CONFIDENCE TAGGING (required): Every bullet point or claim in this section
 must start with exactly one of these two tags:
-  - `[HIGH-CONFIDENCE]` - only for claims directly evidenced by the log(s)
-    or source code (e.g. an exact exception type, a stack trace line, a
-    status code that literally appears in the input), OR a genuine match
-    against a prior similar incident provided above.
-  - `[INFERRED]` - for claims that are plausible reasoning or domain
-    knowledge but NOT directly visible in the provided input.
-Do not skip tagging any claim. Format each as a markdown bullet, e.g.:
-  - [HIGH-CONFIDENCE] The log shows a `ConnectionResetError` at line 84.
-  - [INFERRED] This is likely due to the downstream gateway's TLS session
-    timing out under load, though the log does not confirm the exact cause.
+  - `[HIGH-CONFIDENCE]` - for claims directly evidenced by the log(s) or code.
+  - `[INFERRED]` - for plausible reasoning or domain knowledge.
 
 ## 2. Architecture Impact
-Output a Mermaid.js flowchart or sequence diagram (whichever fits better)
+Output a Mermaid.js **flowchart** (use `flowchart LR` or `flowchart TD`)
 showing the components involved in the failure and how the error
-propagates between them. If multiple logs were provided, the diagram MUST
-reflect the cross-service flow identified in the timeline above (prefer a
-sequence diagram to show ordering between services). The diagram MUST be
-enclosed in a fenced code block tagged exactly ```mermaid and ```. The
-failing/originating component MUST be visually highlighted in red using
-Mermaid style syntax, for example:
+propagates between them. **CRITICAL REQUIREMENT:** Do NOT use `sequenceDiagram` 
+because it causes styling compilation errors. The diagram MUST be enclosed 
+in a fenced code block tagged exactly ```mermaid and ```. The failing/originating 
+component MUST be visually highlighted in red using valid flowchart style syntax:
     style ComponentName fill:#ff4d4d,stroke:#900,color:#fff
-Keep node labels short. Do not include any prose inside the mermaid block
-itself - all explanation goes in the surrounding markdown text.
+Keep node labels short. Do not include any prose inside the mermaid block itself.
 
 ## 3. Remediation / Git Patch
 Give the exact code fix formatted as a valid unified git diff, enclosed in
 a fenced code block tagged exactly ```diff and ```. Use standard diff
-headers (--- a/path, +++ b/path, @@ hunk markers) so it can be rendered by
-diff2html without modification. After the diff block, briefly list any
-manual follow-up steps (e.g. restart commands) that are not part of the
-code change itself.
+headers (--- a/path, +++ b/path, @@ hunk markers). After the diff block, briefly 
+list any manual follow-up steps (e.g. restart commands) that are not part of 
+the code change itself.
 
 Be precise and technical. Do not add any preamble before
 "## 1. Root Cause Analysis" and do not add anything after Section 3."""
@@ -401,7 +346,6 @@ at least one immediate action and one longer-term preventative action.
 Be formal, precise, and concise - this document may be read by leadership.
 Do not add any preamble or content outside these four headings."""
 
-
 # ---------------------------------------------------------------------------
 # 4. SSE FRAMING HELPER
 # ---------------------------------------------------------------------------
@@ -414,13 +358,6 @@ def sse_error(message: str) -> str:
 
 
 def sse_done(incident_id: int = None) -> str:
-    """
-    Sentinel event marking stream completion. Optionally carries the id
-    of the incident that was just stored, so the frontend can offer a
-    "Send to Slack" action immediately, without a separate round trip to
-    look up "what did I just create". None when nothing was stored (e.g.
-    GEMINI_API_KEY missing, or the model produced no usable output).
-    """
     payload = {"done": True}
     if incident_id is not None:
         payload["incident_id"] = incident_id
@@ -428,13 +365,6 @@ def sse_done(incident_id: int = None) -> str:
 
 
 def sse_similar_incidents(matches: list) -> str:
-    """
-    Formats retrieved similar-incident matches as their own SSE event type
-    (distinct from `text`/`error`/`done`), sent BEFORE the analysis text
-    starts streaming, so the frontend can render the "Similar Past
-    Incidents" panel immediately rather than waiting for the full
-    analysis to complete.
-    """
     payload = [
         {
             "similarity": round(m.similarity, 3),
@@ -455,19 +385,35 @@ def sse_similar_incidents(matches: list) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 4b. SHARED TEXT EXTRACTION HELPERS
+# ---------------------------------------------------------------------------
+def extract_fenced_block(markdown: str, lang: str) -> Optional[str]:
+    match = re.search(rf"```{lang}\n(.*?)```", markdown, re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
+def extract_clean_snippet(analysis_text: str, max_chars: int = 500) -> str:
+    section_one = analysis_text.split("## 2.")[0]
+    section_one = section_one.replace("## 1. Root Cause Analysis", "")
+    cleaned = re.sub(r"\[SEVERITY:\s*Sev[1-4]\]", "", section_one, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[HIGH-CONFIDENCE\]\s*", "", cleaned)
+    cleaned = re.sub(r"\[INFERRED\]\s*", "", cleaned)
+    cleaned = cleaned.strip()
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rstrip() + "…"
+    return cleaned
+
+
+def build_incident_deep_link(incident_id: int) -> str:
+    return f"{APP_BASE_URL}/?incident={incident_id}"
+
+
+# ---------------------------------------------------------------------------
 # 5. MOCK GENERATOR (for free frontend testing)
 # ---------------------------------------------------------------------------
 async def mock_analysis_stream(
     error_log: str, environment: str, user_id: int, additional_logs: List[LogSource] = None
 ) -> AsyncGenerator[str, None]:
-    """
-    Yields a hardcoded incident analysis word by word, with a small delay
-    between chunks, simulating the "typewriter" feel of a real LLM stream
-    without calling any API or spending any tokens. Demonstrates all three
-    features (confidence tagging, similar-incident matches, and multi-log
-    correlation when additional_logs is non-empty) so the frontend can be
-    fully built and tested against mock mode alone.
-    """
     additional_logs = additional_logs or []
     is_multi_log = len(additional_logs) > 0
 
@@ -561,15 +507,6 @@ Restart the worker deployment after merging: `kubectl rollout restart deployment
         yield sse_event(word + " ")
         await asyncio.sleep(0.02)
 
-    # Store this mock incident too, using a cheap deterministic
-    # "embedding" derived from the log text itself (NOT a real semantic
-    # embedding - just enough structure for cosine similarity to behave
-    # sensibly in a demo). This matters because store_incident() is what
-    # populates BOTH the dashboard's incident history AND the similar-
-    # incidents matching - without this, mock mode (which most local
-    # testing and demoing uses, specifically to avoid API costs) would
-    # leave the dashboard permanently empty, which would look like a bug
-    # rather than the cost-saving tradeoff it actually is.
     fake_embedding = [(hash(f"{error_log}{i}") % 1000) / 1000.0 for i in range(16)]
     new_incident_id = incident_store.store_incident(
         user_id=user_id,
@@ -578,10 +515,8 @@ Restart the worker deployment after merging: `kubectl rollout restart deployment
         analysis_text=fake_response,
         embedding=fake_embedding,
     )
+    dispatch_generic_webhook_background(user_id, "incident_created", new_incident_id)
 
-    # BUG FIX (preserved from original): this generator must always send a
-    # `done` sentinel, or the frontend's stream-completion logic never
-    # fires in mock mode.
     yield sse_done(incident_id=new_incident_id)
 
 
@@ -596,27 +531,6 @@ async def real_analysis_stream(
     user_id: int,
     additional_logs: List[LogSource] = None,
 ) -> AsyncGenerator[str, None]:
-    """
-    Calls the Gemini API in streaming mode and re-yields each text chunk
-    as it arrives, wrapped in SSE framing.
-
-    Full lifecycle per request:
-      1. Combine all provided logs into one text blob for embedding.
-      2. Embed it and search for similar past incidents (RAG retrieval).
-         Non-fatal on failure - degrades to "no similar incidents" rather
-         than blocking the core analysis.
-      3. Build the system prompt with similar-incident context and
-         multi-log correlation instructions injected as needed.
-      4. Send similar-incident matches to the frontend as their own SSE
-         event, BEFORE the analysis text starts streaming.
-      5. Stream the analysis itself, checking for client disconnects.
-      6. On successful completion, store this incident (with its already-
-         computed embedding) for future retrieval.
-
-    Every failure mode (rate limit, timeout, bad input, network) is caught
-    individually and turned into a specific, actionable message - never a
-    silent hang or a raw traceback leaking to the client.
-    """
     if not GEMINI_API_KEY:
         yield sse_error("GEMINI_API_KEY is not set on the server.")
         yield sse_done()
@@ -625,17 +539,12 @@ async def real_analysis_stream(
     additional_logs = additional_logs or []
     is_multi_log = len(additional_logs) > 0
 
-    # Combine all logs (primary + additional) into one text blob, labeled
-    # by source, for both embedding/retrieval and storage. This keeps a
-    # multi-log incident searchable as a whole in future similarity
-    # lookups, rather than only the primary log being represented.
     combined_log_text = error_log
     if is_multi_log:
         combined_log_text += "\n\n" + "\n\n".join(
             f"[{log.label}]\n{log.content}" for log in additional_logs
         )
 
-    # --- Retrieval step (RAG) ---
     query_embedding = await incident_store.embed_text(combined_log_text)
     similar_context = ""
     matches: list = []
@@ -658,10 +567,6 @@ async def real_analysis_stream(
         system_instruction=system_prompt,
     )
 
-    # Build the user message with clearly labeled sections per log source -
-    # unambiguous labeling is what makes cross-service correlation possible
-    # at all; an unlabeled concatenation would give the model no way to
-    # attribute which event came from which service.
     user_message = f"### PRIMARY ERROR LOG\n```\n{error_log}\n```"
     for log in additional_logs:
         user_message += f"\n\n### LOG: {log.label}\n```\n{log.content}\n```"
@@ -671,15 +576,31 @@ async def real_analysis_stream(
     if matches:
         yield sse_similar_incidents(matches)
 
-    full_response_text = ""  # accumulated so we can store it after streaming completes
-    new_incident_id = None  # set only if storage succeeds; carried into the final done event
+    full_response_text = ""
+    new_incident_id = None
 
     try:
-        response = await model.generate_content_async(
-            user_message,
-            stream=True,
-            request_options={"timeout": 60},  # hard server-side timeout
-        )
+        # Exponential backoff retry loop for handling 503 high demand spikes safely
+        max_retries = 4
+        delay = 2.0
+        response = None
+
+        for attempt in range(max_retries):
+            try:
+                response = await model.generate_content_async(
+                    user_message,
+                    stream=True,
+                    request_options={"timeout": 60},
+                )
+                break
+            except Exception as api_err:
+                err_str = str(api_err)
+                if ("503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str.lower()) and attempt < max_retries - 1:
+                    logger.warning(f"Gemini 503 high demand spike. Retrying in {delay}s (Attempt {attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(delay)
+                    delay *= 2.0  # Double wait time each round (2s -> 4s -> 8s)
+                else:
+                    raise api_err
 
         async for chunk in response:
             if await request.is_disconnected():
@@ -689,10 +610,6 @@ async def real_analysis_stream(
                 full_response_text += chunk.text
                 yield sse_event(chunk.text)
 
-        # --- Storage step ---
-        # Only store if we got a real response and have an embedding for
-        # it. Reuses query_embedding rather than re-embedding, since the
-        # log text hasn't changed since we computed it above.
         if full_response_text.strip() and query_embedding:
             new_incident_id = incident_store.store_incident(
                 user_id=user_id,
@@ -701,6 +618,7 @@ async def real_analysis_stream(
                 analysis_text=full_response_text,
                 embedding=query_embedding,
             )
+            dispatch_generic_webhook_background(user_id, "incident_created", new_incident_id)
 
     except ResourceExhausted:
         logger.warning("Gemini quota exhausted (ResourceExhausted).")
@@ -730,9 +648,6 @@ async def real_analysis_stream(
 # ---------------------------------------------------------------------------
 # 6b. SLACK NOTIFICATIONS
 # ---------------------------------------------------------------------------
-# Maps severity to a hex color for Slack's attachment "color bar" - the
-# same palette as the frontend's severity badges, so the visual language
-# stays consistent whether someone's looking at the dashboard or Slack.
 SEVERITY_COLORS = {
     "Sev1": "#dc2626",
     "Sev2": "#ea580c",
@@ -742,89 +657,73 @@ SEVERITY_COLORS = {
 DEFAULT_SEVERITY_COLOR = "#94a3b8"
 
 
-def extract_clean_snippet(analysis_text: str, max_chars: int = 500) -> str:
-    """
-    Pulls a clean, Slack-readable snippet out of Section 1 (Root Cause
-    Analysis), stripping the [SEVERITY: SevX], [HIGH-CONFIDENCE], and
-    [INFERRED] tags that are meant for the web UI's colored badges but
-    would just read as noisy bracketed text in a plain Slack message.
-    """
-    section_one = analysis_text.split("## 2.")[0]
-    section_one = section_one.replace("## 1. Root Cause Analysis", "")
-    cleaned = re.sub(r"\[SEVERITY:\s*Sev[1-4]\]", "", section_one, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\[HIGH-CONFIDENCE\]\s*", "", cleaned)
-    cleaned = re.sub(r"\[INFERRED\]\s*", "", cleaned)
-    cleaned = cleaned.strip()
-    if len(cleaned) > max_chars:
-        cleaned = cleaned[:max_chars].rstrip() + "…"
-    return cleaned
+def build_slack_blocks(incident: dict) -> list:
+    severity = incident.get("severity", "Unknown")
+    snippet = extract_clean_snippet(incident.get("analysis_text", ""))
+    deep_link = build_incident_deep_link(incident.get("id"))
+
+    context_bits = [f"*Environment:*\n{incident.get('environment', 'General')}",
+                    f"*Detected:*\n{incident.get('created_at', 'Unknown')}"]
+
+    links_line_parts = []
+    if incident.get("jira_issue_key"):
+        links_line_parts.append(f"Jira: `{incident['jira_issue_key']}`")
+    if incident.get("github_pr_url"):
+        links_line_parts.append(f"<{incident['github_pr_url']}|GitHub PR>")
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"🛠️ Incident Alert - {severity}",
+                "emoji": True,
+            },
+        },
+        {
+            "type": "section",
+            "fields": [{"type": "mrkdwn", "text": bit} for bit in context_bits],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": snippet or "_No summary available._"},
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "View Full Analysis", "emoji": True},
+                    "url": deep_link,
+                }
+            ],
+        },
+    ]
+    if links_line_parts:
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": " · ".join(links_line_parts)}],
+        })
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "Sent from PatchOps"}],
+    })
+    return blocks
 
 
 def build_slack_payload(incident: dict) -> dict:
-    """
-    Builds a Slack Block Kit message (using the legacy "attachments"
-    color-bar feature, which is still fully supported for exactly this
-    kind of at-a-glance severity signal) for one incident.
-    """
     severity = incident.get("severity", "Unknown")
     color = SEVERITY_COLORS.get(severity, DEFAULT_SEVERITY_COLOR)
-    snippet = extract_clean_snippet(incident.get("analysis_text", ""))
-
-    return {
-        "attachments": [
-            {
-                "color": color,
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {
-                            "type": "plain_text",
-                            "text": f"🛠️ Incident Alert - {severity}",
-                            "emoji": True,
-                        },
-                    },
-                    {
-                        "type": "section",
-                        "fields": [
-                            {"type": "mrkdwn", "text": f"*Environment:*\n{incident.get('environment', 'General')}"},
-                            {"type": "mrkdwn", "text": f"*Detected:*\n{incident.get('created_at', 'Unknown')}"},
-                        ],
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": snippet or "_No summary available._"},
-                    },
-                    {
-                        "type": "context",
-                        "elements": [
-                            {"type": "mrkdwn", "text": "Sent from SRE AI Copilot"}
-                        ],
-                    },
-                ],
-            }
-        ]
-    }
+    return {"attachments": [{"color": color, "blocks": build_slack_blocks(incident)}]}
 
 
 async def send_slack_notification(webhook_url: str, incident: dict) -> tuple:
-    """
-    Posts the incident summary to the given Slack Incoming Webhook URL.
-    Returns (success: bool, message: str) rather than raising, so the
-    calling endpoint can turn a failure into a clean 4xx/5xx response
-    with an actionable message instead of a raw traceback - a webhook
-    delivery failure is an expected, recoverable event (wrong URL,
-    revoked webhook, Slack outage), not a bug in this server.
-    """
     payload = build_slack_payload(incident)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(webhook_url, json=payload)
         if response.status_code == 200:
             return True, "Sent to Slack successfully."
-        # Slack's Incoming Webhooks return a descriptive plain-text body
-        # on failure (e.g. "invalid_payload", "channel_not_found",
-        # "no_service") - surfacing it directly is more actionable than a
-        # generic "failed" message.
         return False, f"Slack rejected the request: {response.text[:200]}"
     except httpx.TimeoutException:
         return False, "Timed out connecting to Slack. Please try again."
@@ -832,17 +731,348 @@ async def send_slack_notification(webhook_url: str, incident: dict) -> tuple:
         return False, f"Could not reach Slack: {str(e)[:200]}"
 
 
+async def send_slack_bot_message(
+    bot_token: str, channel_id: str, blocks: list, thread_ts: Optional[str] = None
+) -> tuple:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {bot_token}"},
+                json={
+                    "channel": channel_id,
+                    "blocks": blocks,
+                    "thread_ts": thread_ts,
+                    "text": "Incident update from PatchOps",
+                },
+            )
+        data = response.json()
+        if data.get("ok"):
+            return True, "Sent to Slack successfully.", data.get("ts")
+        return False, f"Slack API rejected the request: {data.get('error', 'unknown_error')}", None
+    except httpx.TimeoutException:
+        return False, "Timed out connecting to Slack.", None
+    except httpx.RequestError as e:
+        return False, f"Could not reach Slack: {str(e)[:200]}", None
+
+
+async def notify_slack_for_incident(user_id: int, incident: dict, is_follow_up: bool = False) -> tuple:
+    settings = auth.get_integration_settings(user_id)
+    blocks = build_slack_blocks(incident)
+
+    if settings.get("slack_bot_token") and settings.get("slack_channel_id"):
+        existing_thread_ts = incident.get("slack_thread_ts") if is_follow_up else None
+        success, message, ts = await send_slack_bot_message(
+            settings["slack_bot_token"],
+            settings["slack_channel_id"],
+            blocks,
+            thread_ts=existing_thread_ts,
+        )
+        if success and ts and not existing_thread_ts:
+            incident_store.set_incident_slack_thread(incident["id"], user_id, ts)
+        return success, message, False
+
+    if settings.get("slack_webhook_url"):
+        success, message = await send_slack_notification(settings["slack_webhook_url"], incident)
+        return success, message, False
+
+    return False, "Slack is not configured. Add a webhook URL or bot token in Settings first.", True
+
+
+# ---------------------------------------------------------------------------
+# 6c. JIRA TICKET CREATION / UPDATE
+# ---------------------------------------------------------------------------
+def build_jira_description_adf(incident: dict, include_diff: bool) -> dict:
+    snippet = extract_clean_snippet(incident.get("analysis_text", ""), max_chars=2000)
+    deep_link = build_incident_deep_link(incident.get("id"))
+
+    content = [
+        {
+            "type": "paragraph",
+            "content": [{"type": "text", "text": f"Environment: {incident.get('environment', 'General')}"}],
+        },
+        {
+            "type": "paragraph",
+            "content": [{"type": "text", "text": snippet or "No root-cause summary available."}],
+        },
+    ]
+
+    if include_diff:
+        diff_code = extract_fenced_block(incident.get("analysis_text", ""), "diff")
+        if diff_code:
+            content.append({
+                "type": "codeBlock",
+                "attrs": {"language": "diff"},
+                "content": [{"type": "text", "text": diff_code[:4000]}],
+            })
+
+    content.append({
+        "type": "paragraph",
+        "content": [
+            {"type": "text", "text": "Full analysis: "},
+            {
+                "type": "text",
+                "text": deep_link,
+                "marks": [{"type": "link", "attrs": {"href": deep_link}}],
+            },
+        ],
+    })
+
+    return {"type": "doc", "version": 1, "content": content}
+
+
+async def create_or_update_jira_issue(
+    user_id: int, incident: dict, title_override: str, include_diff: bool
+) -> dict:
+    settings = auth.get_integration_settings(user_id)
+    base_url = settings.get("jira_base_url", "").rstrip("/")
+    project_key = settings.get("jira_project_key", "")
+    email = settings.get("jira_email", "")
+    api_token = settings.get("jira_api_token", "")
+
+    if not (base_url and project_key and email and api_token):
+        raise HTTPException(
+            status_code=400,
+            detail="Jira is not fully configured. Add your Jira base URL, project key, email, and API token in Settings.",
+        )
+
+    auth_header = base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("ascii")
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    severity = incident.get("severity", "Unknown")
+    title = title_override.strip() or f"[{severity}] Incident #{incident['id']} - {incident.get('environment', 'General')}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if incident.get("jira_issue_key"):
+                comment_body = build_jira_description_adf(incident, include_diff)
+                response = await client.post(
+                    f"{base_url}/rest/api/3/issue/{incident['jira_issue_key']}/comment",
+                    headers=headers,
+                    json={"body": comment_body},
+                )
+                if response.status_code not in (200, 201):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Jira rejected the comment update: {response.text[:300]}",
+                    )
+                issue_key = incident["jira_issue_key"]
+            else:
+                response = await client.post(
+                    f"{base_url}/rest/api/3/issue",
+                    headers=headers,
+                    json={
+                        "fields": {
+                            "project": {"key": project_key},
+                            "summary": title,
+                            "description": build_jira_description_adf(incident, include_diff),
+                            "issuetype": {"name": "Bug"},
+                        }
+                    },
+                )
+                if response.status_code not in (200, 201):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Jira rejected the ticket creation: {response.text[:300]}",
+                    )
+                issue_key = response.json().get("key")
+                if not issue_key:
+                    raise HTTPException(status_code=502, detail="Jira did not return an issue key.")
+                incident_store.set_incident_jira_key(incident["id"], user_id, issue_key)
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timed out connecting to Jira.")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Jira: {str(e)[:200]}")
+
+    return {"jira_issue_key": issue_key, "jira_url": f"{base_url}/browse/{issue_key}"}
+
+
+# ---------------------------------------------------------------------------
+# 6d. GITHUB PR SCAFFOLD
+# ---------------------------------------------------------------------------
+async def create_github_pr_scaffold(
+    user_id: int, incident: dict, title_override: str, include_diff: bool
+) -> dict:
+    settings = auth.get_integration_settings(user_id)
+    repo = settings.get("github_repo", "").strip().strip("/")
+    token = settings.get("github_token", "")
+
+    if not (repo and token):
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub is not configured. Add your repo (owner/name) and a token in Settings.",
+        )
+    if "/" not in repo:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub repo must be in 'owner/repo' format.",
+        )
+
+    if incident.get("github_pr_url"):
+        return {"pr_url": incident["github_pr_url"], "already_existed": True}
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    branch_name = f"patchops/incident-{incident['id']}"
+    severity = incident.get("severity", "Unknown")
+    title = title_override.strip() or f"[{severity}] Proposed fix for incident #{incident['id']}"
+    snippet = extract_clean_snippet(incident.get("analysis_text", ""), max_chars=2000)
+    diff_code = extract_fenced_block(incident.get("analysis_text", ""), "diff") if include_diff else None
+    deep_link = build_incident_deep_link(incident["id"])
+
+    file_body_lines = [
+        f"# Incident #{incident['id']} - Proposed Remediation",
+        "",
+        f"**Environment:** {incident.get('environment', 'General')}  ",
+        f"**Severity:** {severity}  ",
+        f"**Full analysis:** {deep_link}",
+        "",
+        "## Root Cause Summary",
+        snippet or "No summary available.",
+    ]
+    if diff_code:
+        file_body_lines += ["", "## Proposed Diff", "```diff", diff_code, "```"]
+    file_body_lines += [
+        "",
+        "_This file was scaffolded automatically by PatchOps. Review the diff "
+        "above carefully before applying it - it was generated from an LLM analysis "
+        "of the incident log, not verified against this repository's current source._",
+    ]
+    file_content = "\n".join(file_body_lines)
+    file_path = f"incident-reports/incident-{incident['id']}.md"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+            repo_resp = await client.get(f"https://api.github.com/repos/{repo}")
+            if repo_resp.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"GitHub rejected the repo lookup: {repo_resp.text[:300]}",
+                )
+            default_branch = repo_resp.json().get("default_branch", "main")
+
+            ref_resp = await client.get(f"https://api.github.com/repos/{repo}/git/ref/heads/{default_branch}")
+            if ref_resp.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"GitHub rejected the base branch lookup: {ref_resp.text[:300]}",
+                )
+            base_sha = ref_resp.json()["object"]["sha"]
+
+            create_ref_resp = await client.post(
+                f"https://api.github.com/repos/{repo}/git/refs",
+                json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
+            )
+            if create_ref_resp.status_code not in (201, 422):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"GitHub rejected branch creation: {create_ref_resp.text[:300]}",
+                )
+
+            put_resp = await client.put(
+                f"https://api.github.com/repos/{repo}/contents/{file_path}",
+                json={
+                    "message": f"Add incident report + proposed patch for incident #{incident['id']}",
+                    "content": base64.b64encode(file_content.encode("utf-8")).decode("ascii"),
+                    "branch": branch_name,
+                },
+            )
+            if put_resp.status_code not in (200, 201):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"GitHub rejected the file commit: {put_resp.text[:300]}",
+                )
+
+            pr_resp = await client.post(
+                f"https://api.github.com/repos/{repo}/pulls",
+                json={
+                    "title": title,
+                    "head": branch_name,
+                    "base": default_branch,
+                    "body": (
+                        f"Auto-scaffolded from PatchOps for incident #{incident['id']}.\n\n"
+                        f"{snippet or ''}\n\nFull analysis: {deep_link}\n\n"
+                        "This PR adds a reviewable incident report + proposed diff. "
+                        "**The diff has not been applied to any source file in this repo** - "
+                        "review it in `incident-reports/` and apply the relevant change yourself."
+                    ),
+                },
+            )
+            if pr_resp.status_code not in (200, 201):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"GitHub rejected PR creation: {pr_resp.text[:300]}",
+                )
+            pr_url = pr_resp.json().get("html_url")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timed out connecting to GitHub.")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach GitHub: {str(e)[:200]}")
+
+    if not pr_url:
+        raise HTTPException(status_code=502, detail="GitHub did not return a PR URL.")
+
+    incident_store.set_incident_github_pr(incident["id"], user_id, pr_url)
+    return {"pr_url": pr_url, "already_existed": False}
+
+
+# ---------------------------------------------------------------------------
+# 6e. GENERIC OUTBOUND WEBHOOK
+# ---------------------------------------------------------------------------
+async def dispatch_generic_webhook(user_id: int, event_type: str, incident_id: int) -> None:
+    try:
+        settings = auth.get_integration_settings(user_id)
+        webhook_url = settings.get("generic_webhook_url", "")
+        if not webhook_url:
+            return
+
+        subscribed_events = settings.get("generic_webhook_events", "all")
+        if subscribed_events != "all":
+            subscribed = {e.strip() for e in subscribed_events.split(",") if e.strip()}
+            if event_type not in subscribed:
+                return
+
+        incident = incident_store.get_incident_by_id(incident_id=incident_id, user_id=user_id)
+        if incident is None:
+            return
+
+        payload = {
+            "event": event_type,
+            "incident_id": incident_id,
+            "severity": incident.get("severity"),
+            "status": incident.get("status"),
+            "environment": incident.get("environment"),
+            "created_at": incident.get("created_at"),
+            "deep_link": build_incident_deep_link(incident_id),
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(webhook_url, json=payload)
+            if resp.status_code >= 300:
+                logger.warning(
+                    f"Generic webhook for user {user_id} returned {resp.status_code} "
+                    f"for event {event_type} on incident {incident_id}."
+                )
+    except Exception as e:
+        logger.warning(f"Generic webhook dispatch failed (non-fatal): {e}")
+
+
+def dispatch_generic_webhook_background(user_id: int, event_type: str, incident_id: int) -> None:
+    try:
+        asyncio.create_task(dispatch_generic_webhook(user_id, event_type, incident_id))
+    except RuntimeError:
+        logger.warning("Could not schedule generic webhook dispatch - no running event loop.")
+
+
 # ---------------------------------------------------------------------------
 # 7. ENDPOINTS
 # ---------------------------------------------------------------------------
 @app.post("/api/register", response_model=auth.TokenResponse)
 async def register(payload: auth.RegisterRequest):
-    """
-    Creates a new user account and immediately returns a valid access
-    token - registering logs you in, rather than requiring a separate
-    login call right after, which would be an extra round trip for no
-    real benefit in a single-tenant portfolio app like this one.
-    """
     username = payload.username.strip()
     if not username or not payload.password:
         raise HTTPException(status_code=400, detail="Username and password are required.")
@@ -852,9 +1082,6 @@ async def register(payload: auth.RegisterRequest):
     try:
         user_id = auth.create_user(username, payload.password)
     except ValueError as e:
-        # Raised by auth.create_user on a duplicate username (the
-        # sqlite3.IntegrityError is caught there and turned into a
-        # clean message) - surfaced here as a 409 Conflict, not a 500.
         raise HTTPException(status_code=409, detail=str(e))
 
     token = auth.create_access_token(user_id, username)
@@ -864,12 +1091,6 @@ async def register(payload: auth.RegisterRequest):
 
 @app.post("/api/login", response_model=auth.TokenResponse)
 async def login(payload: auth.LoginRequest):
-    """
-    Validates credentials and issues a fresh access token. Deliberately
-    returns the SAME error message for both "username doesn't exist" and
-    "password is wrong" - distinguishing the two in the response would
-    let an attacker enumerate valid usernames one guess at a time.
-    """
     user = auth.authenticate_user(payload.username.strip(), payload.password)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
@@ -880,11 +1101,6 @@ async def login(payload: auth.LoginRequest):
 
 @app.get("/api/me")
 async def get_me(current_user: dict = Depends(auth.get_current_user)):
-    """
-    Lets the frontend verify a stored token is still valid on page load
-    (e.g. after a refresh) and fetch the current username to display,
-    without needing a bespoke "whoami" payload defined elsewhere.
-    """
     return current_user
 
 
@@ -901,14 +1117,7 @@ async def list_incidents(
     sort_order: str = Query(default="desc"),
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Returns the current user's incident history, most recent first, as
-    lightweight previews (not full analysis text - keeps the dashboard's
-    initial load fast). Scoped to current_user["user_id"] only; there is
-    no way to pass another user's id here since it comes from the
-    validated JWT, not a request parameter.
-    """
-    limit = max(1, min(limit, 100))  # guardrail against absurd/abusive values
+    limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
     severity_filter = None
@@ -972,10 +1181,6 @@ async def incident_analytics(
     days: int = Query(default=30, ge=1, le=180),
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Returns aggregate incident metrics for dashboards/reporting without
-    requiring the client to load and compute over every incident row.
-    """
     return incident_store.get_incident_analytics(
         user_id=current_user["user_id"], days=days
     )
@@ -983,21 +1188,6 @@ async def incident_analytics(
 
 @app.get("/api/incidents/export")
 async def export_incidents_csv(current_user: dict = Depends(auth.get_current_user)):
-    """
-    Exports the current user's full incident history as a downloadable
-    CSV file. Uses Python's built-in csv module writing into an in-memory
-    StringIO buffer, then wraps that in a StreamingResponse with a
-    Content-Disposition header - the standard way to make a browser treat
-    a response as a file download rather than displaying it inline.
-
-    IMPORTANT - route ordering: this MUST be registered before
-    GET /api/incidents/{incident_id} below. FastAPI/Starlette match
-    routes in registration order, and {incident_id} is a wildcard path
-    parameter that will happily "match" the literal string "export" and
-    try to parse it as an int - which is exactly the bug this ordering
-    avoids (it surfaced as a confusing 422 "unable to parse export as an
-    integer" the first time this was tested here).
-    """
     incidents = incident_store.get_incidents_for_user(
         user_id=current_user["user_id"], limit=10_000, offset=0
     )["incidents"]
@@ -1024,21 +1214,10 @@ async def get_incident_detail(
     incident_id: int,
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Returns one incident's full stored analysis (complete RCA markdown,
-    not a preview) so the dashboard can re-render the original mermaid
-    diagram, git diff, and confidence-tagged analysis exactly as it was
-    first generated - reusing the same rendering code the analyzer view
-    already has, rather than duplicating it.
-    """
     incident = incident_store.get_incident_by_id(
         incident_id=incident_id, user_id=current_user["user_id"]
     )
     if incident is None:
-        # Deliberately the same 404 whether the incident doesn't exist AT
-        # ALL, or exists but belongs to someone else - distinguishing the
-        # two would confirm to an attacker that a given ID is valid,
-        # just owned by another user.
         raise HTTPException(status_code=404, detail="Incident not found.")
     return incident
 
@@ -1049,10 +1228,6 @@ async def list_incident_events(
     limit: int = Query(default=100, ge=1, le=500),
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Returns newest-first audit trail events for one incident, scoped to
-    the authenticated user.
-    """
     incident = incident_store.get_incident_by_id(
         incident_id=incident_id, user_id=current_user["user_id"]
     )
@@ -1070,10 +1245,6 @@ async def record_incident_outcome(
     payload: OutcomeRecordRequest,
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Stores user feedback on whether the suggested remediation worked.
-    This powers outcome-aware ranking for future similar incidents.
-    """
     incident = incident_store.get_incident_by_id(
         incident_id=incident_id, user_id=current_user["user_id"]
     )
@@ -1092,6 +1263,9 @@ async def record_incident_outcome(
             status_code=400,
             detail=f"{str(e)}",
         )
+
+    dispatch_generic_webhook_background(current_user["user_id"], "outcome_recorded", incident_id)
+
     return {
         "incident_id": incident_id,
         "recorded_outcome": payload.outcome.strip().lower(),
@@ -1105,7 +1279,6 @@ async def list_incident_outcomes(
     limit: int = Query(default=100, ge=1, le=500),
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """Returns newest-first outcome feedback entries for this incident."""
     incident = incident_store.get_incident_by_id(
         incident_id=incident_id, user_id=current_user["user_id"]
     )
@@ -1123,12 +1296,6 @@ async def update_incident_status(
     payload: StatusUpdateRequest,
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Updates an incident's workflow status (Open / Investigating /
-    Resolved). Same ownership scoping as GET /api/incidents/{id}: the
-    underlying query checks user_id as well as incident_id, so this
-    can't be used to modify another user's incident by guessing an id.
-    """
     if payload.status not in incident_store.VALID_STATUSES:
         raise HTTPException(
             status_code=400,
@@ -1142,17 +1309,15 @@ async def update_incident_status(
     )
     if result is None:
         raise HTTPException(status_code=404, detail="Incident not found.")
+
+    dispatch_generic_webhook_background(current_user["user_id"], "status_changed", incident_id)
+
     return result
 
 
 @app.get("/api/settings")
 async def get_settings(current_user: dict = Depends(auth.get_current_user)):
-    """Returns the current user's saved integration settings (currently
-    just the Slack webhook URL). Returns an empty string, not an error,
-    when nothing has been configured yet - "not configured" is a normal
-    state, not a failure."""
-    webhook_url = auth.get_webhook_url(current_user["user_id"])
-    return {"slack_webhook_url": webhook_url or ""}
+    return auth.get_integration_settings_for_api(current_user["user_id"])
 
 
 @app.put("/api/settings")
@@ -1160,22 +1325,54 @@ async def update_settings(
     payload: SettingsUpdateRequest,
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Saves the user's Slack webhook URL. Only a loose format check is
-    applied (must be empty, or a plausible https:// URL) rather than
-    strictly validating it's an actual Slack hooks.slack.com domain -
-    Slack occasionally changes its webhook domain conventions, and a
-    false-positive rejection here is worse than letting an invalid URL
-    fail later with a clear error on the actual "Send to Slack" attempt.
-    """
-    url = payload.slack_webhook_url.strip()
-    if url and not url.startswith("https://"):
+    for url_field in ("slack_webhook_url", "jira_base_url", "generic_webhook_url"):
+        value = getattr(payload, url_field).strip()
+        if value and not value.startswith("https://"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{url_field} must start with https:// (or leave blank to clear it).",
+            )
+
+    github_repo = payload.github_repo.strip()
+    if github_repo and "/" not in github_repo:
         raise HTTPException(
             status_code=400,
-            detail="Webhook URL must start with https:// (or leave blank to clear it).",
+            detail="github_repo must be in 'owner/repo' format (or leave blank to clear it).",
         )
-    auth.set_webhook_url(current_user["user_id"], url)
-    return {"slack_webhook_url": url}
+
+    events = payload.generic_webhook_events.strip() or "all"
+    if events != "all":
+        invalid = [
+            e.strip() for e in events.split(",")
+            if e.strip() and e.strip() not in incident_store.WEBHOOK_EVENT_TYPES
+        ]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown webhook event type(s): {', '.join(invalid)}. "
+                       f"Valid types: {', '.join(incident_store.WEBHOOK_EVENT_TYPES)}, or 'all'.",
+            )
+
+    updates = {
+        "slack_webhook_url": payload.slack_webhook_url,
+        "slack_channel_id": payload.slack_channel_id,
+        "jira_base_url": payload.jira_base_url,
+        "jira_project_key": payload.jira_project_key,
+        "jira_email": payload.jira_email,
+        "github_repo": payload.github_repo,
+        "generic_webhook_url": payload.generic_webhook_url,
+        "generic_webhook_events": events,
+    }
+    for secret_field, secret_value in (
+        ("slack_bot_token", payload.slack_bot_token),
+        ("jira_api_token", payload.jira_api_token),
+        ("github_token", payload.github_token),
+    ):
+        if secret_value.strip():
+            updates[secret_field] = secret_value
+
+    auth.update_integration_settings(current_user["user_id"], updates)
+    return auth.get_integration_settings_for_api(current_user["user_id"])
 
 
 @app.post("/api/incidents/{incident_id}/notify-slack")
@@ -1183,36 +1380,61 @@ async def notify_slack(
     incident_id: int,
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Sends one incident's summary to the user's configured Slack webhook.
-    Two distinct failure modes are surfaced separately: no webhook
-    configured (400 - user needs to visit Settings) vs. Slack itself
-    rejecting/failing the delivery (502 - a downstream provider issue,
-    not something wrong with this server).
-    """
     incident = incident_store.get_incident_by_id(
         incident_id=incident_id, user_id=current_user["user_id"]
     )
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found.")
 
-    webhook_url = auth.get_webhook_url(current_user["user_id"])
-    if not webhook_url:
-        raise HTTPException(
-            status_code=400,
-            detail="No Slack webhook configured. Add one in Settings first.",
-        )
-
-    success, message = await send_slack_notification(webhook_url, incident)
+    success, message, not_configured = await notify_slack_for_incident(
+        current_user["user_id"], incident, is_follow_up=bool(incident.get("slack_thread_ts"))
+    )
     if not success:
-        raise HTTPException(status_code=502, detail=message)
+        raise HTTPException(status_code=400 if not_configured else 502, detail=message)
+
     incident_store.log_incident_event(
         incident_id=incident_id,
         user_id=current_user["user_id"],
         event_type="slack_notification_sent",
-        note="Incident summary sent to Slack webhook.",
+        note="Incident summary sent to Slack.",
     )
     return {"status": "sent", "message": message}
+
+
+@app.post("/api/incidents/{incident_id}/jira")
+async def create_jira_ticket(
+    incident_id: int,
+    payload: ExternalIssueRequest,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    incident = incident_store.get_incident_by_id(
+        incident_id=incident_id, user_id=current_user["user_id"]
+    )
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found.")
+
+    result = await create_or_update_jira_issue(
+        current_user["user_id"], incident, payload.title, payload.include_diff
+    )
+    return result
+
+
+@app.post("/api/incidents/{incident_id}/github-pr")
+async def create_github_pr(
+    incident_id: int,
+    payload: ExternalIssueRequest,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    incident = incident_store.get_incident_by_id(
+        incident_id=incident_id, user_id=current_user["user_id"]
+    )
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found.")
+
+    result = await create_github_pr_scaffold(
+        current_user["user_id"], incident, payload.title, payload.include_diff
+    )
+    return result
 
 
 @app.post("/api/analyze")
@@ -1221,22 +1443,9 @@ async def analyze_incident(
     request: Request,
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Entry point hit by the frontend's fetch() call for live incident
-    analysis (RCA + Mermaid diagram + git diff, streamed). Supports both
-    single-log (original) and multi-log (additional_logs populated)
-    requests via the same schema.
-
-    Now requires authentication: incidents are tied to the requesting
-    user both for storage and for scoping "similar past incidents"
-    retrieval to that user's own history, rather than a shared pool.
-    """
     if not payload.error_log.strip():
         raise HTTPException(status_code=400, detail="error_log cannot be empty.")
 
-    # Guardrail: Gemini's free tier has a token-per-request ceiling. Now
-    # accounts for ALL additional labeled logs too, not just the primary
-    # log and source code, since a multi-log request can get large fast.
     MAX_TOTAL_CHARS = 80_000
     additional_chars = sum(len(log.content) for log in payload.additional_logs)
     total_chars = len(payload.error_log) + len(payload.source_code) + additional_chars
@@ -1282,15 +1491,6 @@ async def generate_postmortem(
     payload: PostMortemRequest,
     current_user: dict = Depends(auth.get_current_user),
 ):
-    """
-    Generates a formal Incident Post-Mortem document from the original
-    error log plus the analysis text already produced by /api/analyze.
-    Deliberately non-streaming - see original docstring reasoning.
-
-    Requires authentication (same as /api/analyze) - primarily to prevent
-    anonymous users from draining the shared Gemini free-tier quota, since
-    this endpoint doesn't otherwise need to know which user is asking.
-    """
     if not payload.error_log.strip() or not payload.analysis_text.strip():
         raise HTTPException(
             status_code=400,
@@ -1375,7 +1575,6 @@ async def generate_postmortem(
 
 @app.get("/")
 async def serve_frontend():
-    """Serves the single-file frontend at the root URL."""
     if not FRONTEND_TEMPLATE_PATH.exists():
         raise HTTPException(
             status_code=500,
@@ -1386,8 +1585,6 @@ async def serve_frontend():
 
 @app.get("/api/health")
 async def health_check():
-    """Liveness probe, and a quick way to confirm which mode (mock vs
-    real) the deployed instance is in."""
     return {
         "status": "ok",
         "mock_mode": MOCK_MODE,
@@ -1399,10 +1596,6 @@ async def health_check():
     }
 
 
-# ---------------------------------------------------------------------------
-# 8. LOCAL DEV ENTRYPOINT
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=True)

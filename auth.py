@@ -1,7 +1,7 @@
 """
 auth.py
 -------
-Authentication layer for the SRE AI Copilot: password hashing, JWT
+Authentication layer for PatchOps: password hashing, JWT
 issuance/validation, user registration/login, and the FastAPI dependency
 that protects routes.
 
@@ -17,6 +17,13 @@ Kept intentionally simple and stateless:
     DB_PATH) rather than a separate database - there's no operational
     reason to split them for a project at this scale, and it keeps
     deployment to a single file.
+
+Phase E adds four more integration-settings columns (managed in
+incident_store.init_db's ALTER TABLE guards): slack_bot_token and
+slack_channel_id (for threaded Slack notifications via chat.postMessage,
+as an alternative to a plain Incoming Webhook), and generic_webhook_url /
+generic_webhook_events (for the outbound "notify any endpoint on incident
+events" integration).
 """
 
 import os
@@ -33,7 +40,7 @@ from pydantic import BaseModel
 
 import incident_store
 
-logger = logging.getLogger("sre-copilot")
+logger = logging.getLogger("patchops")
 
 # ---------------------------------------------------------------------------
 # CONFIG
@@ -224,6 +231,25 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # USER SETTINGS (integrations)
 # ---------------------------------------------------------------------------
+# Fields that update_integration_settings() is allowed to write, and that
+# get_integration_settings() reads back - one list/tuple pairing so a new
+# integration field added in the future only needs to show up here (plus
+# a column in incident_store.init_db) to be wired through the whole path.
+_SETTINGS_COLUMNS = (
+    "slack_webhook_url",
+    "slack_bot_token",
+    "slack_channel_id",
+    "jira_base_url",
+    "jira_project_key",
+    "jira_email",
+    "jira_api_token",
+    "github_repo",
+    "github_token",
+    "generic_webhook_url",
+    "generic_webhook_events",
+)
+
+
 def get_integration_settings(user_id: int) -> dict:
     """
     Returns all integration settings for server-side use, including tokens.
@@ -232,76 +258,58 @@ def get_integration_settings(user_id: int) -> dict:
     """
     conn = sqlite3.connect(incident_store.DB_PATH)
     try:
+        columns_sql = ", ".join(_SETTINGS_COLUMNS)
         row = conn.execute(
-            """
-            SELECT
-                slack_webhook_url,
-                jira_base_url,
-                jira_project_key,
-                jira_email,
-                jira_api_token,
-                github_repo,
-                github_token
-            FROM users
-            WHERE id = ?
-            """,
+            # columns_sql is built from the hardcoded _SETTINGS_COLUMNS
+            # tuple above, never from user input; the actual value
+            # (user_id) is still passed as a `?` parameter below.
+            f"SELECT {columns_sql} FROM users WHERE id = ?",  # nosec B608
             (user_id,),
         ).fetchone()
     finally:
         conn.close()
 
     if row is None:
-        return {
-            "slack_webhook_url": "",
-            "jira_base_url": "",
-            "jira_project_key": "",
-            "jira_email": "",
-            "jira_api_token": "",
-            "github_repo": "",
-            "github_token": "",
-        }
-    return {
-        "slack_webhook_url": row[0] or "",
-        "jira_base_url": row[1] or "",
-        "jira_project_key": row[2] or "",
-        "jira_email": row[3] or "",
-        "jira_api_token": row[4] or "",
-        "github_repo": row[5] or "",
-        "github_token": row[6] or "",
-    }
+        return {column: ("all" if column == "generic_webhook_events" else "") for column in _SETTINGS_COLUMNS}
+
+    result = {column: (row[i] or "") for i, column in enumerate(_SETTINGS_COLUMNS)}
+    if not result.get("generic_webhook_events"):
+        result["generic_webhook_events"] = "all"
+    return result
 
 
 def get_integration_settings_for_api(user_id: int) -> dict:
     """
-    Returns browser-safe integration settings. Secrets are never returned,
-    only boolean flags that indicate whether a secret is configured.
+    Returns browser-safe integration settings. Secrets (API tokens, bot
+    tokens) are never returned in full, only boolean "configured" flags -
+    the settings UI shows "connected"/"not connected" rather than ever
+    re-displaying a stored secret.
     """
     settings = get_integration_settings(user_id)
     return {
         "slack_webhook_url": settings["slack_webhook_url"],
+        "slack_bot_token_configured": bool(settings["slack_bot_token"]),
+        "slack_channel_id": settings["slack_channel_id"],
         "jira_base_url": settings["jira_base_url"],
         "jira_project_key": settings["jira_project_key"],
         "jira_email": settings["jira_email"],
         "jira_api_token_configured": bool(settings["jira_api_token"]),
         "github_repo": settings["github_repo"],
         "github_token_configured": bool(settings["github_token"]),
+        "generic_webhook_url": settings["generic_webhook_url"],
+        "generic_webhook_events": settings["generic_webhook_events"] or "all",
     }
 
 
 def update_integration_settings(user_id: int, updates: dict) -> None:
     """
-    Updates integration settings for a user. Empty-string values clear fields.
+    Updates integration settings for a user. Empty-string values clear
+    fields. Only keys present in `updates` AND in _SETTINGS_COLUMNS are
+    written - anything else (e.g. a stray "id" key) is silently ignored
+    rather than raising, since callers pass a Pydantic model's .dict()
+    wholesale.
     """
-    allowed_fields = {
-        "slack_webhook_url",
-        "jira_base_url",
-        "jira_project_key",
-        "jira_email",
-        "jira_api_token",
-        "github_repo",
-        "github_token",
-    }
-    update_keys = [key for key in updates.keys() if key in allowed_fields]
+    update_keys = [key for key in updates.keys() if key in _SETTINGS_COLUMNS]
     if not update_keys:
         return
 
@@ -315,7 +323,11 @@ def update_integration_settings(user_id: int, updates: dict) -> None:
     conn = sqlite3.connect(incident_store.DB_PATH)
     try:
         conn.execute(
-            f"UPDATE users SET {assignments} WHERE id = ?",
+            # `assignments` only ever contains keys already filtered
+            # against the _SETTINGS_COLUMNS allowlist above (update_keys),
+            # never raw user input; actual values are still passed
+            # positionally as `?` parameters below.
+            f"UPDATE users SET {assignments} WHERE id = ?",  # nosec B608
             params,
         )
         conn.commit()
@@ -324,11 +336,11 @@ def update_integration_settings(user_id: int, updates: dict) -> None:
 
 
 def get_webhook_url(user_id: int) -> Optional[str]:
-    """Backward-compatible helper for Slack-only callers."""
+    """Backward-compatible helper for Slack-webhook-only callers."""
     value = get_integration_settings(user_id).get("slack_webhook_url", "")
     return value or None
 
 
 def set_webhook_url(user_id: int, webhook_url: str) -> None:
-    """Backward-compatible helper for Slack-only callers."""
+    """Backward-compatible helper for Slack-webhook-only callers."""
     update_integration_settings(user_id, {"slack_webhook_url": webhook_url})
