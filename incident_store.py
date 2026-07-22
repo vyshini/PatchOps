@@ -114,10 +114,15 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 hashed_password TEXT NOT NULL,
+                email TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
         )
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         conn.execute(
             """
@@ -722,14 +727,8 @@ flowchart TD
 
 
 def seed_sample_incidents_if_empty(conn: sqlite3.Connection, user_id: int) -> None:
-    try:
-        user_inc_count = conn.execute(
-            "SELECT COUNT(*) FROM incidents WHERE user_id = ?", (user_id,)
-        ).fetchone()[0]
-        if user_inc_count == 0:
-            _seed_sample_incidents_for_user(conn, user_id)
-    except Exception as e:
-        logger.warning(f"Error checking or seeding sample incidents for user {user_id}: {e}")
+    # Auto-seeding disabled so new user accounts start completely empty
+    pass
 
 
 def get_incidents_for_user(
@@ -1298,6 +1297,11 @@ def get_incident_analytics(user_id: int, days: int = ANALYTICS_DEFAULT_DAYS) -> 
         ).fetchone()
         duplicate_incident_count = int(duplicate_count_row[0]) if duplicate_count_row else 0
 
+        top_environments = [
+            {"environment": row[0], "count": row[1]}
+            for row in environment_rows
+        ]
+
         outcome_row = conn.execute(
             """
             SELECT
@@ -1337,6 +1341,7 @@ def get_incident_analytics(user_id: int, days: int = ANALYTICS_DEFAULT_DAYS) -> 
         "duplicate_incidents": duplicate_incident_count,
         "duplicate_rate_percent": round((duplicate_incident_count / total_count) * 100, 2) if total_count else 0.0,
         "severity_breakdown": severity_breakdown,
+        "top_environments": top_environments,
         "outcome_summary": {
             "sample_count": outcome_sample_count,
             "worked_count": int(outcome_row[1] or 0) if outcome_row else 0,
