@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Now copy the actual application code.
 COPY main.py auth.py incident_store.py ./
 COPY templates ./templates
-
+COPY incidents.db ./
 # Documents which port the app listens on. This does NOT actually publish
 # the port - that happens via `docker run -p` or the hosting platform's
 # config - but it's good practice and some platforms (Render) read it.
