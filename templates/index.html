@@ -31,7 +31,7 @@
         mermaid.initialize({ 
             startOnLoad: false, 
             theme: 'dark', 
-            fontSize: 13, 
+            fontSize: 11, 
             securityLevel: 'loose',
             flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
         });
@@ -51,11 +51,15 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            min-height: 0;
+            padding: 0.5rem 0;
         }
         #mermaidOutput svg {
-            max-width: 100% !important;
+            max-width: 480px !important;
+            width: auto !important;
             height: auto !important;
-            max-height: 260px !important;
+            max-height: 180px !important;
+            min-height: 0 !important;
         }
 
         /* Custom Markdown Styles */
@@ -376,14 +380,14 @@
                     </div>
 
                     <div id="archContainer" class="hidden glass-card rounded-2xl overflow-hidden shadow-xl border border-slate-800">
-                        <div class="bg-slate-800/80 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
+                        <div class="bg-slate-800/80 border-b border-slate-700 px-5 py-2.5 flex items-center justify-between">
                             <h2 class="text-xs font-extrabold text-white uppercase tracking-widest flex items-center gap-2">
-                                <i class="ph-fill ph-graph text-primary text-lg"></i> 2. Architecture Impact
+                                <i class="ph-fill ph-graph text-primary text-base"></i> 2. Architecture Impact
                             </h2>
                             <span class="text-[10px] bg-slate-900 border border-slate-700 text-slate-400 px-2.5 py-0.5 rounded-full font-mono">System Topology & Impact Flow</span>
                         </div>
-                        <div class="p-4 overflow-x-auto flex justify-center bg-slate-950/90">
-                            <div id="mermaidOutput" class="w-full max-w-3xl py-2 flex justify-center items-center"></div>
+                        <div class="p-3 overflow-x-auto flex justify-center bg-slate-950/90">
+                            <div id="mermaidOutput" class="w-full max-w-md py-1 flex justify-center items-center"></div>
                         </div>
                     </div>
 
