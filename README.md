@@ -4,8 +4,6 @@ PatchOps is an AI-powered web application that helps engineering teams analyze p
 
 🔗 **Live Demo:** http://patchops-env.eba-d4azdp3d.ap-south-1.elasticbeanstalk.com/
 
-> **Note:** This is a public demo. Please register a new account for testing and avoid using real production credentials.
-
 ---
 
 ## 🚀 Features
