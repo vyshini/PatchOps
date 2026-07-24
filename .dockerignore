@@ -1,4 +1,4 @@
-# Never bake real secrets into the image
+
 .env
 
 # Python cruft
@@ -8,11 +8,8 @@ __pycache__/
 .venv/
 venv/
 
-# Version control / editor files
+
 .git/
 .gitignore
 .vscode/
 .idea/
-
-# Docs not needed at runtime
-README.md
