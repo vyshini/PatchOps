@@ -289,9 +289,9 @@ must start with exactly one of these two tags:
 ## 2. Architecture Impact
 Output a Mermaid.js **flowchart** (use `flowchart LR` or `flowchart TD`)
 showing the components involved in the failure and how the error
-propagates between them. **CRITICAL REQUIREMENT:** Do NOT use `sequenceDiagram` 
-because it causes styling compilation errors. The diagram MUST be enclosed 
-in a fenced code block tagged exactly ```mermaid and ```. The failing/originating 
+propagates between them. **CRITICAL REQUIREMENT:** Do NOT use `sequenceDiagram`
+because it causes styling compilation errors. The diagram MUST be enclosed
+in a fenced code block tagged exactly ```mermaid and ```. The failing/originating
 component MUST be visually highlighted in red using valid flowchart style syntax:
     style ComponentName fill:#ff4d4d,stroke:#900,color:#fff
 Keep node labels short. Do not include any prose inside the mermaid block itself.
@@ -299,8 +299,8 @@ Keep node labels short. Do not include any prose inside the mermaid block itself
 ## 3. Remediation / Git Patch
 Give the exact code fix formatted as a valid unified git diff, enclosed in
 a fenced code block tagged exactly ```diff and ```. Use standard diff
-headers (--- a/path, +++ b/path, @@ hunk markers). After the diff block, briefly 
-list any manual follow-up steps (e.g. restart commands) that are not part of 
+headers (--- a/path, +++ b/path, @@ hunk markers). After the diff block, briefly
+list any manual follow-up steps (e.g. restart commands) that are not part of
 the code change itself.
 
 Be precise and technical. Do not add any preamble before

@@ -645,11 +645,14 @@ def _build_incident_where_clause(
 
 
 def _seed_sample_incidents_for_user(conn: sqlite3.Connection, user_id: int) -> None:
-    sample_1_log = "2026-07-22 14:03:11 [ERROR] [payment-worker] ConnectionResetError: [Errno 104] Connection reset by peer while POSTing to https://api.payment-gateway.internal:8443/v2/charges"
+    sample_1_log = "2026-07-22 14:03:11 [ERROR] [payment-worker] ConnectionResetError: [Errno 104] Connection " \
+    "reset by peer while POSTing to" \
+    " https://api.payment-gateway.internal:8443/v2/charges"
     sample_1_analysis = """## 1. Root Cause Analysis
 [SEVERITY: Sev2]
 
-The provided **Python** log indicates a `ConnectionResetError` while the payment worker attempted to reach the downstream payment gateway under high traffic.
+The provided **Python** log indicates a `ConnectionResetError` while the payment worker attempted
+to reach the downstream payment gateway under high traffic.
 
 - [HIGH-CONFIDENCE] Upstream TLS termination began failing during peak load.
 - [HIGH-CONFIDENCE] Outbound HTTP call in `payment_worker.py` line 84 timed out without retry logic.
@@ -676,7 +679,8 @@ flowchart LR
 ```
 """
 
-    sample_2_log = "2026-07-22 11:20:05 [CRITICAL] [postgresql-db] FATAL: remaining connection slots are reserved for non-replication superuser connections. Max connections 100 reached."
+    sample_2_log = "2026-07-22 11:20:05 [CRITICAL] [postgresql-db] FATAL: remaining connection slots " \
+    "are reserved for non-replication superuser connections. Max connections 100 reached."
     sample_2_analysis = """## 1. Root Cause Analysis
 [SEVERITY: Sev3]
 
@@ -712,7 +716,8 @@ flowchart TD
         """,
         (user_id, sample_1_log, "Python", sample_1_analysis, json.dumps([]), "Sev2", "Investigating", f1)
     )
-    _insert_event(conn, cursor1.lastrowid, user_id, "incident_created", new_status="Investigating", note="Initial incident auto-populated for workspace.")
+    _insert_event(conn, cursor1.lastrowid, user_id, "incident_created", new_status="Investigating",
+                   note="Initial incident auto-populated for workspace.")
 
     cursor2 = conn.execute(
         """
@@ -721,7 +726,8 @@ flowchart TD
         """,
         (user_id, sample_2_log, "PostgreSQL", sample_2_analysis, json.dumps([]), "Sev3", "Open", f2)
     )
-    _insert_event(conn, cursor2.lastrowid, user_id, "incident_created", new_status="Open", note="Initial incident auto-populated for workspace.")
+    _insert_event(conn, cursor2.lastrowid, user_id, "incident_created", new_status="Open",
+                  note="Initial incident auto-populated for workspace.")
 
     conn.commit()
 
@@ -1297,7 +1303,7 @@ def get_incident_analytics(user_id: int, days: int = ANALYTICS_DEFAULT_DAYS) -> 
         ).fetchone()
         duplicate_incident_count = int(duplicate_count_row[0]) if duplicate_count_row else 0
 
-        top_environments = [
+        [
             {"environment": row[0], "count": row[1]}
             for row in environment_rows
         ]
@@ -1341,7 +1347,6 @@ def get_incident_analytics(user_id: int, days: int = ANALYTICS_DEFAULT_DAYS) -> 
         "duplicate_incidents": duplicate_incident_count,
         "duplicate_rate_percent": round((duplicate_incident_count / total_count) * 100, 2) if total_count else 0.0,
         "severity_breakdown": severity_breakdown,
-        "top_environments": top_environments,
         "outcome_summary": {
             "sample_count": outcome_sample_count,
             "worked_count": int(outcome_row[1] or 0) if outcome_row else 0,
