@@ -156,6 +156,3 @@ http://localhost:8000
 
 The application is containerized using Docker and deployed on **AWS Elastic Beanstalk**.
 
-
-
- licensed under the MIT License.
