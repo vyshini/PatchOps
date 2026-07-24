@@ -156,16 +156,6 @@ http://localhost:8000
 
 The application is containerized using Docker and deployed on **AWS Elastic Beanstalk**.
 
----
 
-## 👩‍💻 Author
 
-**Vyshini B M**
-
-Computer Science Undergraduate | Aspiring Full Stack Developer | AI Enthusiast
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License.
+ licensed under the MIT License.
