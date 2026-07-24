@@ -1,31 +1,3 @@
-"""
-auth.py
--------
-Authentication layer for PatchOps: password hashing, JWT
-issuance/validation, user registration/login, and the FastAPI dependency
-that protects routes.
-
-Kept intentionally simple and stateless:
-  - Passwords hashed with bcrypt directly (not passlib - passlib's bcrypt
-    backend has a history of version-compatibility issues; the bcrypt
-    library alone is simpler and just as correct for this use case).
-  - Sessions are stateless JWTs, not server-side session storage - no
-    extra table/cache needed, and it scales cleanly if this ever moved
-    to multiple replicas (a session store wouldn't, without adding Redis
-    or similar).
-  - Users live in the same SQLite file as incidents (via incident_store's
-    DB_PATH) rather than a separate database - there's no operational
-    reason to split them for a project at this scale, and it keeps
-    deployment to a single file.
-
-Phase E adds four more integration-settings columns (managed in
-incident_store.init_db's ALTER TABLE guards): slack_bot_token and
-slack_channel_id (for threaded Slack notifications via chat.postMessage,
-as an alternative to a plain Incoming Webhook), and generic_webhook_url /
-generic_webhook_events (for the outbound "notify any endpoint on incident
-events" integration).
-"""
-
 import os
 import logging
 import sqlite3
